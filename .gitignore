@@ -1,0 +1,7 @@
+.DS_Store
+*.bak
+plugins/*/.claude-plugin/types/
+.claude/agent-memory/
+.claude/agent-memory-local/
+.claude/worktrees/
+.claude/settings.local.json

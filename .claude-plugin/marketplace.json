@@ -1,0 +1,17 @@
+{
+  "name": "claude-mods",
+  "description": "Function-hooks mods (bands, panes) for Claude Code",
+  "owner": { "name": "Ishan Dubey" },
+  "plugins": [
+    {
+      "name": "meter",
+      "description": "Session meters above the prompt; /meter opens detailed metrics",
+      "source": "./plugins/meter"
+    },
+    {
+      "name": "agent-graph",
+      "description": "Desktop-only pane drawing the session's running subagents as a left-to-right graph",
+      "source": "./plugins/agent-graph"
+    }
+  ]
+}
