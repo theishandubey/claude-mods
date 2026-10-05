@@ -8,7 +8,7 @@ A Claude Code plugin marketplace of mods: function-hooks plugins that draw bands
 |---|---|
 | `meter` | Band above the prompt showing context, prompt cache, usage limits and cost; `/meter` opens a detailed metrics pane. Works in the terminal and the desktop app. |
 | `agent-graph` | Pane graphing the session's running subagents left to right. Desktop app only. |
-| `auto-handoff` | Turns every compaction of the main conversation into a nine-section handoff and files it, with the decisions, gotchas, conventions and open questions it names, into an Open Knowledge Format bundle at `.auto-handoff/` in the project root, which git ignores by default; starts a handoff itself once the context passes 30% of a window over 200k tokens (50% of a smaller one), and shows each new conversation the bundle's index. No UI. |
+| `auto-handoff` | Once the context passes 40% of a window over 200k tokens (50% of a smaller one), has a dedicated turn write a nine-section handoff, with the decisions, gotchas, conventions and open questions it names, into an Open Knowledge Format bundle at `.auto-handoff/` in the project root, which git ignores by default; then clears the context and continues from the handoff, and shows each new conversation the bundle's index. Safe with several sessions in one project; `/auto-handoff on\|off\|status` switches it per session. No UI. |
 
 ## Install
 
