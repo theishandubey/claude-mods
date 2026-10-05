@@ -1,4 +1,5 @@
 import type { Activity, AgentRow } from '../types'
+import { modelLabel } from './model'
 import { windowFor } from './pricing'
 
 export const MAIN = 'main'
@@ -16,6 +17,7 @@ export type GraphNode = {
   ctx: string
   ctxPct?: number
   ctxTone: Tone
+  model?: string
   extras: string[]
   depth: number
   slot: number
@@ -166,6 +168,7 @@ export const buildGraph = (
       description: row ? sanitize(row.description) : '',
       activity: sanitize(act?.tool ?? ''),
       meta: metaOf(status, act, now, row !== null),
+      model: modelLabel(act?.lastModel === undefined ? undefined : sanitize(act.lastModel)),
       ...metricsOf(act),
       depth,
       slot,

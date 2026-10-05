@@ -27,10 +27,9 @@ const MODELS: Record<string, { price: Price; window: number }> = {
 
 const SUFFIX = /(?:-\d{8})?(?:[@[].*)?$/s
 
-const entryFor = (model: string) => {
-  const id = model.replace(SUFFIX, '')
-  return MODELS[id]
-}
+export const baseId = (model: string) => model.replace(SUFFIX, '')
+
+const entryFor = (model: string) => MODELS[baseId(model)]
 
 export const priceFor = (model: string): Price | undefined => entryFor(model)?.price
 
