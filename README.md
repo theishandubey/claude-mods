@@ -8,6 +8,7 @@ A Claude Code plugin marketplace of mods: function-hooks plugins that draw bands
 |---|---|
 | `meter` | Band above the prompt showing context, prompt cache, usage limits and cost; `/meter` opens a detailed metrics pane. Works in the terminal and the desktop app. |
 | `agent-graph` | Pane graphing the session's running subagents left to right. Desktop app only. |
+| `auto-handoff` | Turns every compaction of the main conversation into a nine-section handoff and files it, with the decisions, gotchas, conventions and open questions it names, into an Open Knowledge Format bundle at `.auto-handoff/` in the project root, which git ignores by default; starts a handoff itself once the context passes 30% of a window over 200k tokens (50% of a smaller one), and shows each new conversation the bundle's index. No UI. |
 
 ## Install
 
@@ -16,6 +17,7 @@ git clone <repo-url> claude-mods
 claude plugin marketplace add ./claude-mods
 claude plugin install meter@claude-mods --scope user
 claude plugin install agent-graph@claude-mods --scope user
+claude plugin install auto-handoff@claude-mods --scope user
 ```
 
 ## Layout
