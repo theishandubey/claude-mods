@@ -1,0 +1,24 @@
+{
+  "name": "auto-handoff",
+  "version": "0.2.0",
+  "author": { "name": "Ishan Dubey" },
+  "description": "Compacts the conversation into a handoff once the context passes a threshold (30% of windows over 200k tokens, 50% of smaller ones) and files each handoff, with the durable knowledge it names, into an OKF bundle at .auto-handoff/ in the project root",
+  "userConfig": {
+    "largeWindowPercent": {
+      "type": "number",
+      "title": "Handoff threshold for windows over 200k tokens",
+      "description": "Percent of the context window at which the conversation is compacted into a handoff when the window is larger than 200k tokens.",
+      "default": 30,
+      "min": 5,
+      "max": 95
+    },
+    "smallWindowPercent": {
+      "type": "number",
+      "title": "Handoff threshold for windows up to 200k tokens",
+      "description": "Percent of the context window at which the conversation is compacted into a handoff when the window is 200k tokens or smaller.",
+      "default": 50,
+      "min": 5,
+      "max": 95
+    }
+  }
+}
