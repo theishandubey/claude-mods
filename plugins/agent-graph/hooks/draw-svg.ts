@@ -10,6 +10,11 @@ const BAR_W = W - 2 * INSET
 const BAR_H = 4
 const EXTRA_DX = 8
 const CHAR_W = 6.6
+const TITLE_CHAR_W = 7.8
+const TITLE_X = 27
+const TITLE_MAX = 26
+const MODEL_MAX = 18
+const MODEL_GAP = 8
 
 const esc = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -39,7 +44,7 @@ const LIGHT = `
 .card.failed{stroke:#d0544a;stroke-width:1.5}
 .card.done{fill:none;stroke-dasharray:4 3}
 .title{font:600 12.5px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#1f1e1d}
-.meta,.act{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#8a877f}
+.meta,.act,.model{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#8a877f}
 .ctx.warn,.bar.warn{fill:#c98a1b}.ctx.hot,.bar.hot{fill:#d0544a}.bar.ok{fill:#409524}
 .track{fill:rgba(128,128,128,0.28)}
 .done .bar,.idle .bar,.failed .bar{fill-opacity:.5}
@@ -52,7 +57,7 @@ const LIGHT = `
 const DARK = `
 .card{fill:#242423;stroke:#3d3d3b}
 .card.done{fill:none}
-.title{fill:#edede9}.desc{fill:#c9c7c0}.meta,.act{fill:#8f8d87}
+.title{fill:#edede9}.desc{fill:#c9c7c0}.meta,.act,.model{fill:#8f8d87}
 .done .title,.done .desc{fill:#8f8d87}
 .edge{stroke:#4d4c49}
 .ctx.warn,.bar.warn{fill:#c98a1b}.ctx.hot,.bar.hot{fill:#d0544a}.bar.ok{fill:#409524}`
@@ -94,12 +99,25 @@ export const drawSvg = (root: GraphNode, slots: number, depth: number) => {
         ? ''
         : `<rect class="track" x="${x + INSET}" y="${y + 62}" width="${BAR_W}" height="${BAR_H}" rx="2"/>` +
           `<rect class="bar ${n.ctxTone}" x="${x + INSET}" y="${y + 62}" width="${+((BAR_W * n.ctxPct) / 100).toFixed(2)}" height="${BAR_H}" rx="2"/>`
+    const model = n.model === undefined ? undefined : truncate(n.model, MODEL_MAX)
+    const titleMax =
+      model === undefined
+        ? TITLE_MAX
+        : Math.min(
+            TITLE_MAX,
+            Math.floor((W - INSET - TITLE_X - [...model].length * CHAR_W - MODEL_GAP) / TITLE_CHAR_W),
+          )
+    const modelText =
+      model === undefined
+        ? ''
+        : `<text class="model" x="${x + W - INSET}" y="${y + 23}" text-anchor="end">${esc(model)}</text>`
     const desc = n.description || (n.depth === 0 ? 'this session' : '')
     nodes.push(
       `<g class="${n.status}">` +
         `<rect class="card ${n.status}" x="${x + 0.5}" y="${y + 0.5}" width="${W - 1}" height="${H - 1}" rx="9"/>` +
         pulse +
-        `<text class="title" x="${x + 27}" y="${y + 23}">${esc(truncate(n.title, 26))}</text>` +
+        `<text class="title" x="${x + TITLE_X}" y="${y + 23}">${esc(truncate(n.title, titleMax))}</text>` +
+        modelText +
         `<text class="meta" x="${x + 12}" y="${y + 40}">${esc(truncate(meta, 30))}</text>` +
         metrics +
         gauge +
