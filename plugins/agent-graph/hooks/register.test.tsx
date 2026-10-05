@@ -930,3 +930,167 @@ test('over the cap, keeps every running agent and the agents that finished last'
   for (let i = 8; i < 42; i += 1) expect(text).toContain(`job ${String(i).padStart(2, '0')}`)
   for (let i = 0; i < 8; i += 1) expect(text).not.toContain(`job ${String(i).padStart(2, '0')}`)
 })
+
+test('a subagent card shows its model name right-aligned on the title row', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx)
+  queueUsage('a1', usage('claude-sonnet-5-5', 10_000, 1000, 0, 0))
+  await step($, 'a1')
+  const text = textOf(await (await mountPane($)).drawn())
+  const card = cardsOf(text).find(c => c.includes('explorer')) ?? ''
+  expect(card).toMatch(/<text class="model" x="\d+(\.\d+)?" y="\d+(\.\d+)?" text-anchor="end">Sonnet 5\.5<\/text>/)
+})
+
+const MODEL_RE = /<text class="model"[^>]*>([^<]*)<\/text>/
+
+test('the main card shows its own model name', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx)
+  queueUsage('main', usage('claude-opus-5-5', 100_000, 20_000, 0, 0))
+  await step($, undefined)
+  const text = textOf(await (await mountPane($)).drawn())
+  const main = cardsOf(text).find(c => c.includes('>Main<')) ?? ''
+  expect(main).toContain('<text class="model" x="260" y="31" text-anchor="end">Opus 5.5</text>')
+  expect(MODEL_RE.exec(cardsOf(text).find(c => c.includes('explorer')) ?? '')).toBeNull()
+})
+
+test('a card draws no model name before its first step', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx)
+  queueUsage('a1', usage('claude-sonnet-5-5', 10_000, 1000, 0, 0))
+  await step($, 'a1')
+  const text = textOf(await (await mountPane($)).drawn())
+  expect(cardsOf(text).find(c => c.includes('explorer')) ?? '').toContain('class="model"')
+  for (const kind of ['>Main<', 'architect', 'fixer']) {
+    expect(cardsOf(text).find(c => c.includes(kind)) ?? '').not.toContain('class="model"')
+  }
+})
+
+test('a model id reads as a family name and version, with date, 1m and platform suffixes dropped', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx, [
+    ...GRAPH_AGENTS,
+    { id: 'a4', type: 'tester', description: 'Run the tests', status: 'running' },
+    { id: 'a5', type: 'scout', description: 'Scout ahead', status: 'running' },
+  ])
+  queueUsage('a1', usage('claude-haiku-4-5-20251001', 100, 10, 0, 0))
+  queueUsage('a2', usage('claude-fable-5-1[1m]', 100, 10, 0, 0))
+  queueUsage('a3', usage('claude-opus-5', 100, 10, 0, 0))
+  queueUsage('a4', usage('claude-experimental-x', 100, 10, 0, 0))
+  queueUsage('a5', usage('claude-sonnet-5-5@20251001', 100, 10, 0, 0))
+  for (const id of ['a1', 'a2', 'a3', 'a4', 'a5']) await step($, id)
+  const text = textOf(await (await mountPane($)).drawn())
+  const modelOf = (kind: string) => MODEL_RE.exec(cardsOf(text).find(c => c.includes(kind)) ?? '')?.[1]
+  expect(modelOf('explorer')).toBe('Haiku 4.5')
+  expect(modelOf('architect')).toBe('Fable 5.1')
+  expect(modelOf('fixer')).toBe('Opus 5')
+  expect(modelOf('tester')).toBe('experimental-x')
+  expect(modelOf('scout')).toBe('Sonnet 5.5')
+})
+
+test('a model id with a bracket suffix followed by a platform suffix reads as a family name and version', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx)
+  queueUsage('a1', usage('claude-sonnet-5-5[1m]@x', 100, 10, 0, 0))
+  await step($, 'a1')
+  const text = textOf(await (await mountPane($)).drawn())
+  expect(MODEL_RE.exec(cardsOf(text).find(c => c.includes('explorer')) ?? '')?.[1]).toBe('Sonnet 5.5')
+})
+
+test('an id that is not exactly a family and version is shown as given minus the claude- prefix', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx, [
+    ...GRAPH_AGENTS,
+    { id: 'a4', type: 'tester', description: 'Run the tests', status: 'running' },
+  ])
+  queueUsage('a1', usage('claude-sonnet-5-5-v2', 100, 10, 0, 0))
+  queueUsage('a2', usage('claude-opus-5-100', 100, 10, 0, 0))
+  queueUsage('a3', usage('claude-my-opus-5', 100, 10, 0, 0))
+  queueUsage('a4', usage('claude-', 100, 10, 0, 0))
+  for (const id of ['a1', 'a2', 'a3', 'a4']) await step($, id)
+  const text = textOf(await (await mountPane($)).drawn())
+  const card = (kind: string) => cardsOf(text).find(c => c.includes(kind)) ?? ''
+  expect(MODEL_RE.exec(card('explorer'))?.[1]).toBe('sonnet-5-5-v2')
+  expect(MODEL_RE.exec(card('architect'))?.[1]).toBe('opus-5-100')
+  expect(MODEL_RE.exec(card('fixer'))?.[1]).toBe('my-opus-5')
+  expect(card('tester')).not.toContain('class="model"')
+})
+
+test('a missing model and an empty model both draw no model name', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx)
+  queueUsage('a1', usage('', 100, 10, 0, 0))
+  await step($, 'a1')
+  const text = textOf(await (await mountPane($)).drawn())
+  expect(cardsOf(text).find(c => c.includes('explorer')) ?? '').not.toContain('class="model"')
+  expect(cardsOf(text).find(c => c.includes('architect')) ?? '').not.toContain('class="model"')
+  expect(cardsOf(text).find(c => c.includes('explorer')) ?? '').toContain('ctx 100')
+})
+
+test('a model id is escaped and stripped of control characters before it is drawn', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx, [
+    ...GRAPH_AGENTS,
+    { id: 'a4', type: 'tester', description: 'Run the tests', status: 'running' },
+  ])
+  queueUsage('a1', usage('claude-a&b<c>"d', 100, 10, 0, 0))
+  queueUsage('a4', usage('claude-x\u0001y\tz', 100, 10, 0, 0))
+  await step($, 'a1')
+  await step($, 'a4')
+  const text = textOf(await (await mountPane($)).drawn())
+  const card = (kind: string) => cardsOf(text).find(c => c.includes(kind)) ?? ''
+  expect(card('explorer')).toContain('>a&amp;b&lt;c&gt;&quot;d</text>')
+  expect(card('tester')).toContain('>xy z</text>')
+})
+
+test('the model name has a style rule in both the light and the dark stylesheet', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx)
+  const text = textOf(await (await mountPane($)).drawn())
+  const dark = text.indexOf('@media (prefers-color-scheme: dark)')
+  const light = ".meta,.act,.model{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#8a877f}"
+  const darkRule = '.title{fill:#edede9}.desc{fill:#c9c7c0}.meta,.act,.model{fill:#8f8d87}'
+  expect(text.indexOf(light)).toBeGreaterThan(-1)
+  expect(text.indexOf(light)).toBeLessThan(dark)
+  expect(text.indexOf(darkRule)).toBeGreaterThan(dark)
+})
+
+test('a long model id is cut to 18 characters with an ellipsis', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx)
+  queueUsage('a1', usage('claude-an-experimental-model-name', 100, 10, 0, 0))
+  await step($, 'a1')
+  const text = textOf(await (await mountPane($)).drawn())
+  const label = MODEL_RE.exec(cardsOf(text).find(c => c.includes('explorer')) ?? '')?.[1] ?? ''
+  expect([...label]).toHaveLength(18)
+  expect(label.endsWith('…')).toBe(true)
+})
+
+test('a long title is cut shorter when the card also shows a model name', async (...ctx) => {
+  const [$] = ctx
+  const long = 'an-extraordinarily-long-agent-type-name'
+  const rows: Row[] = [
+    { id: 'a1', type: long, description: 'With a model', status: 'running' },
+    { id: 'a2', type: long, description: 'Without a model', status: 'running' },
+  ]
+  await bootGraph(ctx, rows)
+  queueUsage('a1', usage('claude-sonnet-5-5', 100, 10, 0, 0))
+  await step($, 'a1')
+  const text = textOf(await (await mountPane($)).drawn())
+  const titleOf = (desc: string) => /class="title"[^>]*>([^<]*)</.exec(cardsOf(text).find(c => c.includes(desc)) ?? '')?.[1] ?? ''
+  const withModel = titleOf('With a model')
+  const without = titleOf('Without a model')
+  expect([...without]).toHaveLength(26)
+  expect(withModel).toBe(`${long.slice(0, 18)}…`)
+})
+
+test('the room kept for a model name counts code points, not UTF-16 units', async (...ctx) => {
+  const [$] = ctx
+  const long = 'an-extraordinarily-long-agent-type-name'
+  await bootGraph(ctx, [{ id: 'a1', type: long, description: 'With a model', status: 'running' }])
+  queueUsage('a1', usage(`claude-${'😀'.repeat(9)}`, 100, 10, 0, 0))
+  await step($, 'a1')
+  const text = textOf(await (await mountPane($)).drawn())
+  const card = cardsOf(text).find(c => c.includes('With a model')) ?? ''
+  expect(/class="title"[^>]*>([^<]*)</.exec(card)?.[1]).toBe(`${long.slice(0, 19)}…`)
+})
