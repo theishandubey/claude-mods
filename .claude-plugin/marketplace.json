@@ -12,6 +12,11 @@
       "name": "agent-graph",
       "description": "Desktop-only pane drawing the session's running subagents as a left-to-right graph",
       "source": "./plugins/agent-graph"
+    },
+    {
+      "name": "auto-handoff",
+      "description": "Compacts the conversation into a handoff at 30% of a large window (50% of a 200k one) and files it, with the decisions, gotchas, conventions and open questions it names, into an OKF bundle in .auto-handoff/",
+      "source": "./plugins/auto-handoff"
     }
   ]
 }
