@@ -3,6 +3,7 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { Activity, AgentRow } from '../types'
 import { drawSvg } from './draw-svg'
+import { drawText } from './draw-text'
 import {
   MAIN,
   RECENT_MS,
@@ -27,13 +28,14 @@ const mainWorkingAtom = atom({ plugin: 'agent-graph', key: 'mainWorking' } as co
 const PENDING_MS = 5000
 // The engine refuses an Svg over 4096px tall; 34 rows of cards is the most that fit.
 const MAX_AGENT_CARDS = 34
+// A pane tree draws only its first 100,000 characters of text; 100 entries stay well under it.
+const MAX_TEXT_AGENTS = 100
 
 const isRunning = (status: string) => status === 'running' || status === 'pending'
 
 let timer: Timer | undefined
 let wasLive = false
 let isSetUp = false
-let hasDesktop: boolean | undefined
 let spawnsInFlight = 0
 let needsRegister = false
 let refreshChain: Promise<void> = Promise.resolve()
@@ -43,17 +45,13 @@ async function onDesktop($: EngineInterface) {
   return (await $.session.surfaces()).includes('desktop')
 }
 
-async function setUp($: EngineInterface, surface: string | null) {
+function setUp($: EngineInterface) {
   if (isSetUp) return
-  const desktop = surface === 'desktop' || (await onDesktop($))
-  hasDesktop = desktop
-  if (isSetUp || !desktop) return
   isSetUp = true
-  void $.command.register({ name: 'agent-graph', description: 'Show running subagents as a graph' }).catch(() => {})
+  void $.command.register({ name: 'agent-graph', description: 'Show running subagents' }).catch(() => {})
 }
 
-async function ensureTimer($: EngineInterface) {
-  if (timer || !(await onDesktop($))) return
+function ensureTimer($: EngineInterface) {
   timer ??= $.clock.every(1000, () => {
     if (outstandingRefreshes === 0) void refresh($)
   })
@@ -76,10 +74,6 @@ function refresh($: EngineInterface) {
 }
 
 async function syncAgents($: EngineInterface) {
-  if (!(await onDesktop($))) {
-    stopTimer()
-    return
-  }
   const now = await $.clock.now()
   const list = await $.agent.list()
   const rows: AgentRow[] = list.map(a => ({
@@ -123,12 +117,11 @@ async function syncAgents($: EngineInterface) {
   const isLive = rows.some(r => isRunning(r.status) || now - (activity[r.id]?.endedAt ?? -Infinity) < RECENT_MS)
   if (isLive || wasLive) await update($, nowAtom, () => now)
   wasLive = isLive
-  if (isLive || spawnsInFlight > 0) await ensureTimer($)
+  if (isLive || spawnsInFlight > 0) ensureTimer($)
   else stopTimer()
 }
 
 async function noteActivity($: EngineInterface, id: string, fn: (a: Activity) => Activity) {
-  if (!isSetUp && (hasDesktop === false || !(await onDesktop($)))) return
   const now = await $.clock.now()
   await update($, activityAtom, act => ({
     ...act,
@@ -136,19 +129,18 @@ async function noteActivity($: EngineInterface, id: string, fn: (a: Activity) =>
   }))
 }
 
-async function openPane($: EngineInterface) {
-  if (!(await onDesktop($))) return undefined
+function openPane($: EngineInterface) {
   return $.ui.open({ id: PANE, title: TITLE })
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await setUp($, e.surface)
+    setUp($)
     return next(e)
   })
 
   on('session.attach', async ($, e, next) => {
-    await setUp($, e.surface)
+    setUp($)
     return next(e)
   })
 
@@ -159,7 +151,6 @@ export const register: Register = on => {
       stopTimer()
       wasLive = false
       isSetUp = false
-      hasDesktop = undefined
       await update($, agentsAtom, () => [])
       await update($, activityAtom, () => ({}))
       await update($, autoOpenedAtom, () => false)
@@ -169,9 +160,8 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'agent-graph' }, async $ => {
-    await ensureTimer($)
+    ensureTimer($)
     const opened = await openPane($)
-    if (!opened) return { text: 'The Agents graph draws only in the desktop app.' }
     if (opened.isPlaced) return { text: 'Agents graph opened.' }
     const reason = sanitize(opened.reason)
 
@@ -181,7 +171,7 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     if (needsRegister) {
       needsRegister = false
-      await setUp($, null)
+      setUp($)
     }
     await update($, mainWorkingAtom, () => true)
 
@@ -200,13 +190,13 @@ export const register: Register = on => {
     try {
       if (isSpawn) {
         spawnsInFlight += 1
-        await ensureTimer($)
+        ensureTimer($)
       }
       const summary = summarizeTool(e as unknown as Record<string, unknown>)
       await noteActivity($, e.agentId ?? MAIN, a => ({ ...a, tool: summary }))
       if (!isSpawn) return await next(e)
 
-      if (!(await read($, autoOpenedAtom)) && (await onDesktop($))) {
+      if (!(await read($, autoOpenedAtom)) && (await onDesktop($).catch(() => false))) {
         await update($, autoOpenedAtom, () => true)
         void openPane($).catch(() => {})
       }
@@ -232,8 +222,8 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
-    if (e.surface !== 'desktop') return next(e)
-    const { Box, Text, Svg } = $.ui.resolve(e)
+    if (e.surface !== 'desktop' && e.surface !== 'terminal') return next(e)
+    const { Box, Text } = $.ui.resolve(e)
     const agents = await read($, agentsAtom)
     const activity = await read($, activityAtom)
     const mainWorking = await read($, mainWorkingAtom)
@@ -241,7 +231,7 @@ export const register: Register = on => {
     const now = await $.clock.now()
 
     const visible = visibleAgents(agents, activity, now)
-    const { agents: shown, hidden } = capAgents(visible, activity, MAX_AGENT_CARDS)
+    const { agents: shown, hidden } = capAgents(visible, activity, e.surface === 'terminal' ? MAX_TEXT_AGENTS : MAX_AGENT_CARDS)
     const running = visible.filter(a => isRunning(a.status)).length
     const finished = agents.filter(a => !isRunning(a.status) && activity[a.id]?.endedAt !== undefined).length
 
@@ -263,6 +253,18 @@ export const register: Register = on => {
     }
 
     const { root, slots, depth } = buildGraph(shown, activity, now, mainWorking)
+    if (e.surface === 'terminal') {
+      return (
+        <Box flexDirection="column" rowGap={1}>
+          {header}
+          <Box key="graph" flexDirection="column">
+            {drawText($.ui.resolve(e), root, e.props.bodyColumns)}
+          </Box>
+          {hidden > 0 ? <Text key="more" dimColor>{`+${hidden} more ${hidden === 1 ? 'agent' : 'agents'}`}</Text> : null}
+        </Box>
+      )
+    }
+    const { Svg } = $.ui.resolve(e)
     const { svg, width, height } = drawSvg(root, slots, depth)
     const alt = shown.map(a => sanitize(`${a.name ?? a.type} (${a.status}): ${a.description}`)).join('; ')
 

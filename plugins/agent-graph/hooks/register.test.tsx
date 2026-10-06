@@ -26,6 +26,28 @@ const textOf = (node: unknown): string => {
   return inner
 }
 
+const linesOf = (t: string) => t.split('\n')
+
+const textsOf = (node: unknown): Node[] => {
+  if (node === null || node === undefined || typeof node !== 'object') return []
+  if (Array.isArray(node)) return node.flatMap(textsOf)
+  const el = node as Node
+  const inner = (el.children ?? []).flatMap(textsOf)
+  return el.type === 'Text' ? [el, ...inner] : inner
+}
+
+const leafTextsOf = (node: unknown) => textsOf(node).filter(t => textsOf(t.children).length === 0)
+
+const lineBoxesOf = (node: unknown): Node[] => {
+  if (node === null || node === undefined || typeof node !== 'object') return []
+  if (Array.isArray(node)) return node.flatMap(lineBoxesOf)
+  const el = node as Node
+  const isLine = el.type === 'Box' && (el.children ?? []).some(c => (c as Node | undefined)?.props?.flexGrow === 1)
+  return isLine ? [el] : (el.children ?? []).flatMap(lineBoxesOf)
+}
+
+const leafText = (tree: unknown, text: string) => leafTextsOf(tree).find(t => textOf(t) === text)
+
 type Row = { id: string; type: string; description: string; status: string; parentId?: string }
 type Body = Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>
 type Ctx = Parameters<Body>
@@ -123,7 +145,7 @@ const boot = async (
   return clock
 }
 
-const mountPane = async ($: Ctx[0], surface: 'terminal' | 'desktop' = 'desktop', columns = 140) => {
+const mountPane = async ($: Ctx[0], surface: 'terminal' | 'desktop' | 'mobile' = 'desktop', columns = 140) => {
   return $.ui.mount({ plugin: 'agent-graph', surface, component: 'Pane', props: props(columns), requestId: 'agent-graph' } as never)
 }
 
@@ -258,7 +280,7 @@ test('a spawn whose surfaces lookup rejects leaves no spawn in flight and no tim
   await $.tool.call(SPAWN)
   probes.surfacesFail = false
   await $.turn.complete(TURN_DONE('zz'))
-  await clock.settle()
+  await clock.advance(1000)
   const settled = calls
   await clock.advance(10_000)
   expect(calls).toBe(settled)
@@ -398,28 +420,36 @@ test('draws a killed agent as idle and only a failed one as failed', async (...c
   expect(text.match(/<g class="idle">/g)).toHaveLength(2)
 })
 
-test('the pane draws nothing of its own on the terminal', async (...ctx) => {
+test('the pane draws the agent tree as text on the terminal, with no Svg', async (...ctx) => {
   const [$] = ctx
   await bootMixed(ctx, ['terminal', 'desktop'])
-  const ui = await mountPane($, 'terminal')
-  expect(await ui.drawn()).toMatchObject({ type: 'engine', ref: 7 })
+  const ui = await mountPane($, 'terminal', 96)
+  const drawn = await ui.drawn()
+  expect(drawn).not.toMatchObject({ type: 'engine' })
+  const text = textOf(drawn)
+  expect(text).not.toContain('[svg]')
+  const lines = linesOf(text)
+  expect(lines).toContain('├─● code-reviewer  Review the diff')
+  expect(lines).toContain('├─✓ fix-it  Apply the fixes')
+  expect(lines).toContain('├─✗ x  Broken')
+  expect(lines).toContain('└─○ y  Stopped by the user')
 })
 
-test('opens no pane, registers no command and polls nothing when the session never draws on desktop', async (...ctx) => {
+test('on a terminal-only session registers the command and polls, but opens no pane unasked', async (...ctx) => {
   const [$] = ctx
   const clock = await boot(ctx, () => [{ id: 'a1', type: 'explorer', description: 'Map', status: 'running' }], NOW, undefined, true, ['terminal'])
   await $.turn.complete(TURN_DONE('a1'))
   await clock.advance(5000)
   expect(opens.calls).toEqual([])
-  expect(probes.commands).toBe(0)
-  expect(probes.agentList).toBe(0)
+  expect(probes.commands).toBe(1)
+  expect(probes.agentList).toBeGreaterThan(0)
 })
 
-test('registers the command when a desktop attaches to a terminal-only session, once', async (...ctx) => {
+test('registers the command at start on a terminal-only session and not again when a desktop attaches', async (...ctx) => {
   const [$] = ctx
   const surfaces = ['terminal']
   await boot(ctx, () => [], NOW, undefined, false, surfaces)
-  expect(probes.commands).toBe(0)
+  expect(probes.commands).toBe(1)
   surfaces.push('desktop')
   await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' } as never)
   expect(probes.commands).toBe(1)
@@ -435,12 +465,12 @@ test('registers the command once when a desktop session starts and then attaches
   expect(probes.commands).toBe(1)
 })
 
-test('the command opens no pane while the session has no desktop', async (...ctx) => {
+test('the command opens the pane on a terminal-only session', async (...ctx) => {
   const [$] = ctx
   await boot(ctx, () => [], NOW, undefined, false, ['terminal'])
   const reply = await $.command.run({ command: 'agent-graph' } as never)
-  expect(opens.calls).toEqual([])
-  expect(reply).toMatchObject({ text: 'The Agents graph draws only in the desktop app.' })
+  expect(opens.calls).toMatchObject([{ id: 'agent-graph', title: 'Agents' }])
+  expect(reply).toMatchObject({ text: 'Agents graph opened.' })
 })
 
 test('the command says the graph opened when a desktop draws it', async (...ctx) => {
@@ -468,48 +498,44 @@ test('the command does not claim the graph opened when the pane is not placed an
   expect(reply).toMatchObject({ text: 'The Agents graph could not be opened' })
 })
 
-test('keeps no activity bookkeeping while the session has no desktop', async (...ctx) => {
+test('keeps activity bookkeeping on a terminal-only session', async (...ctx) => {
   const [$] = ctx
-  const surfaces = ['terminal']
-  const clock = await boot(ctx, () => [{ id: 'a1', type: 'explorer', description: 'Map', status: 'running' }], NOW, undefined, false, surfaces)
+  const clock = await boot(ctx, () => [{ id: 'a1', type: 'explorer', description: 'Map', status: 'running' }], NOW, undefined, false, ['terminal'])
   await $.tool.call({ tool: 'Read', file_path: '/x/foo.ts', agentId: 'a1' } as never)
   await $.tool.call({ tool: 'Read', file_path: '/x/bar.ts' } as never)
   for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1, agentId: 'a1' } as never)) {
   }
-  surfaces.push('desktop')
-  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' } as never)
   await $.turn.complete(TURN_DONE('a1'))
   await clock.advance(1000)
-  const text = textOf(await (await mountPane($)).drawn())
-  expect(text).toContain('1 running')
-  expect(text).not.toContain('Read foo.ts')
-  expect(text).not.toContain('Read bar.ts')
-  expect(text).not.toContain('steps')
+  const text = textOf(await (await mountPane($, 'terminal', 96)).drawn())
+  expect(text).toContain('Read foo.ts')
+  expect(text).toContain('Read bar.ts')
+  expect(text).toContain('1 step')
+  expect(text).not.toContain('1 steps')
 })
 
-test('asks the session for its surfaces once, not on every tool call or step, when it has no desktop', async (...ctx) => {
+test('asks the session for its surfaces only when a spawn could auto-open the pane', async (...ctx) => {
   const [$] = ctx
   await boot(ctx, () => [], NOW, undefined, false, ['terminal'])
-  const settled = probes.surfaces
   for (let i = 0; i < 5; i += 1) {
     await $.tool.call({ tool: 'Read', file_path: `/x/${i}.ts` } as never)
     for await (const _ of $.turn.step({ turnId: 't1', index: i, model: 'm', messageCount: 1 } as never)) {
     }
   }
-  expect(probes.surfaces).toBe(settled)
+  expect(probes.surfaces).toBe(0)
+  await $.tool.call(SPAWN)
+  expect(probes.surfaces).toBe(1)
 })
 
-test('asks again after a clear in case a desktop is now attached', async (...ctx) => {
+test('keeps activity bookkeeping after a clear on a terminal-only session', async (...ctx) => {
   const [$] = ctx
-  const surfaces = ['terminal']
-  await boot(ctx, () => [{ id: 'a1', type: 'explorer', description: 'Map', status: 'running' }], NOW, undefined, false, surfaces)
+  await boot(ctx, () => [{ id: 'a1', type: 'explorer', description: 'Map', status: 'running' }], NOW, undefined, false, ['terminal'])
   await $.session.end({ reason: 'clear', sessionId: 's1' } as never)
-  surfaces.push('desktop')
   await $.tool.call({ tool: 'Read', file_path: '/x/foo.ts', agentId: 'a1' } as never)
   await $.turn.start({ text: 'hi', turnId: 't1' })
-  expect(probes.commands).toBe(1)
+  expect(probes.commands).toBe(2)
   await $.turn.complete(TURN_DONE('a1'))
-  const text = textOf(await (await mountPane($)).drawn())
+  const text = textOf(await (await mountPane($, 'terminal', 96)).drawn())
   expect(text).toContain('Read foo.ts')
 })
 
@@ -542,12 +568,12 @@ test('registers the command again on the first turn after a resume', async (...c
   expect(probes.commands).toBe(2)
 })
 
-test('registers no command after a clear when the session has no desktop', async (...ctx) => {
+test('registers the command again on the first turn after a clear on a terminal-only session', async (...ctx) => {
   const [$] = ctx
   await boot(ctx, () => [], NOW, undefined, false, ['terminal'])
   await $.session.end({ reason: 'clear', sessionId: 's1' } as never)
   await $.turn.start({ text: 'hi', turnId: 't1' })
-  expect(probes.commands).toBe(0)
+  expect(probes.commands).toBe(2)
 })
 
 test('auto-opens the graph on the first spawn once a desktop has attached', async (...ctx) => {
@@ -749,18 +775,16 @@ test('the main card shows its own metrics from the main loop', async (...ctx) =>
   expect(cardsOf(text).find(c => c.includes('explorer')) ?? '').toContain('waiting for first reply')
 })
 
-test('keeps no usage bookkeeping while the session has no desktop', async (...ctx) => {
+test('keeps usage bookkeeping on a terminal-only session', async (...ctx) => {
   const [$] = ctx
-  const surfaces = ['terminal']
-  await boot(ctx, () => [{ id: 'a1', type: 'explorer', description: 'Map', status: 'running' }], NOW, undefined, false, surfaces)
+  await boot(ctx, () => [{ id: 'a1', type: 'explorer', description: 'Map', status: 'running' }], NOW, undefined, false, ['terminal'])
   queueUsage('a1', usage('claude-sonnet-5-5', 10_000, 1000, 230_000, 10_000))
   await step($, 'a1')
-  surfaces.push('desktop')
-  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' } as never)
   await $.turn.complete(TURN_DONE('a1'))
-  const text = textOf(await (await mountPane($)).drawn())
-  expect(text).toContain('waiting for first reply')
-  expect(text).not.toContain('250k')
+  const lines = linesOf(textOf(await (await mountPane($, 'terminal', 96)).drawn()))
+  const metrics = lines[lines.findIndex(l => l.includes('explorer')) + 1] ?? ''
+  expect(metrics).toContain('ctx 250k 25%')
+  expect(metrics).not.toContain('waiting for first reply')
 })
 
 test('token counts drop the decimal from 10k up and keep one below it', async (...ctx) => {
@@ -1093,4 +1117,263 @@ test('the room kept for a model name counts code points, not UTF-16 units', asyn
   const text = textOf(await (await mountPane($)).drawn())
   const card = cardsOf(text).find(c => c.includes('With a model')) ?? ''
   expect(/class="title"[^>]*>([^<]*)</.exec(card)?.[1]).toBe(`${long.slice(0, 19)}…`)
+})
+
+const TREE: Row[] = [
+  { id: 'a1', type: 'explorer', description: 'Map the auth module', status: 'running' },
+  { id: 'a2', type: 'web-researcher', description: 'Look up OAuth PKCE docs', status: 'completed', parentId: 'a1' },
+  { id: 'a3', type: 'explorer', description: 'Find every caller of getSession', status: 'running', parentId: 'a1' },
+  { id: 'a4', type: 'explorer', description: 'Trace the token refresh path', status: 'failed' },
+  { id: 'a5', type: 'explorer', description: 'List the session store tests', status: 'completed' },
+]
+
+const bootTree = async (ctx: Ctx) => {
+  let list = TREE.map(a => ({ ...a, status: 'running' }))
+  const clock = await boot(ctx, () => list, NOW, undefined, false, ['terminal'])
+  await ctx[0].turn.start({ text: 'go', turnId: 't1' })
+  await ctx[0].turn.complete(TURN_DONE('zz'))
+  list = TREE
+  await clock.advance(1000)
+  return clock
+}
+
+const terminalLines = async ($: Ctx[0], columns: number) => {
+  const ui = await mountPane($, 'terminal', columns)
+  const lines = linesOf(textOf(await ui.drawn()))
+  await ui.unmount()
+  return lines
+}
+
+test('draws the nested tree with rails on the terminal', async (...ctx) => {
+  const [$] = ctx
+  await bootTree(ctx)
+  const lines = await terminalLines($, 96)
+  expect(lines[0]).toContain('2 running')
+  expect(lines[0]).toContain('3 finished this session')
+  const expected = [
+    '● Main',
+    '├─● explorer  Map the auth module',
+    '│ ├─✓ web-researcher  Look up OAuth PKCE docs',
+    '│ └─● explorer  Find every caller of getSession',
+    '├─✗ explorer  Trace the token refresh path',
+    '└─✓ explorer  List the session store tests',
+  ]
+  const at = expected.map(want => lines.findIndex(l => l.startsWith(want)))
+  expect(at.every(i => i >= 0)).toBe(true)
+  expect([...at].sort((a, b) => a - b)).toEqual(at)
+})
+
+test('a wide terminal entry puts every metric on one line', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx)
+  queueUsage(
+    'a1',
+    usage('claude-sonnet-5-5', 1000, 500, 0, 9000),
+    usage('claude-sonnet-5-5', 10_000, 1000, 230_000, 10_000),
+  )
+  await step($, 'a1', 0)
+  await step($, 'a1', 1)
+  const lines = await terminalLines($, 96)
+  expect(lines.filter(l => l.includes('2 steps  1.5k tok  ctx 250k 25% ━━━─────────  cache 92%  ~$0.16'))).toHaveLength(1)
+  expect(lines.find(l => l.includes('explorer'))?.endsWith('Sonnet 5.5')).toBe(true)
+})
+
+test('medium splits the metrics and narrow drops the gauge and moves the description', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx)
+  queueUsage(
+    'a1',
+    usage('claude-sonnet-5-5', 1000, 500, 0, 9000),
+    usage('claude-sonnet-5-5', 10_000, 1000, 230_000, 10_000),
+  )
+  await step($, 'a1', 0)
+  await step($, 'a1', 1)
+  const medium = await terminalLines($, 64)
+  const counts = medium.findIndex(l => l.endsWith('2 steps  1.5k tok'))
+  expect(counts).toBeGreaterThan(0)
+  expect(medium[counts + 1]).toContain('ctx 250k 25% ━━──────  cache 92%  ~$0.16')
+  const narrow = await terminalLines($, 44)
+  expect(narrow.join('\n')).not.toContain('━')
+  const head = narrow.findIndex(l => l.includes('explorer'))
+  expect(narrow[head]).toContain('Sonnet 5.5')
+  expect(narrow[head]).not.toContain('Map the auth module')
+  expect(narrow[head + 1]).toBe('│   Map the auth module')
+})
+
+test('context is coloured only under pressure, and only for running agents and Main', async (...ctx) => {
+  const [$] = ctx
+  let list = GRAPH_AGENTS
+  const clock = await boot(ctx, () => list, NOW, undefined, false)
+  await $.turn.complete(TURN_DONE('zz'))
+  queueUsage('main', usage('claude-opus-5-5', 90_000, 10, 0, 0))
+  queueUsage('a1', usage('claude-opus-5-5', 500_000, 10, 0, 0))
+  queueUsage('a2', usage('claude-opus-5-5', 850_000, 10, 0, 0))
+  await step($, undefined)
+  await step($, 'a1')
+  await step($, 'a2')
+  const ui = await mountPane($, 'terminal', 96)
+  const running = await ui.drawn()
+  expect(leafText(running, '50%')?.props).toMatchObject({ color: 'warning', bold: true })
+  expect(leafText(running, '85%')?.props).toMatchObject({ color: 'error', bold: true })
+  expect(leafText(running, '10%')?.props?.color).toBeUndefined()
+  list = GRAPH_AGENTS.map(a => (a.id === 'a2' ? { ...a, status: 'completed' } : a))
+  await clock.advance(1000)
+  const finished = leafText(await ui.drawn(), '85%')
+  expect(finished?.props?.color).toBeUndefined()
+  expect(finished?.props?.dimColor).toBe(true)
+})
+
+test('a finished entry is dim throughout and a failed glyph is red', async (...ctx) => {
+  const [$] = ctx
+  await bootMixed(ctx, ['terminal'])
+  const tree = await (await mountPane($, 'terminal', 96)).drawn()
+  const lines = lineBoxesOf(tree)
+  const done = lines.findIndex(l => textOf(l).includes('fix-it'))
+  expect(done).toBeGreaterThan(0)
+  const doneTexts = leafTextsOf([lines[done], lines[done + 1]])
+  expect(doneTexts.length).toBeGreaterThan(0)
+  for (const t of doneTexts) {
+    expect(t.props?.dimColor).toBe(true)
+    expect(t.props?.bold).toBeFalsy()
+  }
+  expect(leafText(tree, '✗')?.props).toMatchObject({ color: 'error', bold: true })
+  const running = leafText(tree, '●')
+  expect(running?.props?.bold).toBe(true)
+  expect(running?.props?.color).toBeUndefined()
+})
+
+test('an entry with no reply yet waits for its first one on the terminal', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx)
+  queueUsage('a1', usage('claude-sonnet-5-5', 10_000, 1000, 230_000, 10_000))
+  await step($, 'a1')
+  const lines = await terminalLines($, 96)
+  const metrics = lines[lines.findIndex(l => l.includes('architect')) + 1] ?? ''
+  expect(metrics).toContain('waiting for first reply')
+  expect(metrics).not.toContain('ctx ')
+})
+
+test('the last tool shows under a running entry only', async (...ctx) => {
+  const [$] = ctx
+  let list = GRAPH_AGENTS
+  const clock = await boot(ctx, () => list, NOW, undefined, false)
+  await $.turn.complete(TURN_DONE('zz'))
+  await $.tool.call({ tool: 'Read', file_path: '/x/foo.ts', agentId: 'a1' } as never)
+  const ui = await mountPane($, 'terminal', 96)
+  const lines = linesOf(textOf(await ui.drawn()))
+  expect(lines[lines.findIndex(l => l.includes('explorer')) + 2]).toBe('│   Read foo.ts')
+  list = GRAPH_AGENTS.map(a => (a.id === 'a1' ? { ...a, status: 'completed' } : a))
+  await clock.advance(1000)
+  expect(textOf(await ui.drawn())).not.toContain('Read foo.ts')
+})
+
+test('elapsed time ticks on the terminal while agents run', async (...ctx) => {
+  const [$] = ctx
+  const clock = await bootGraph(ctx, [GRAPH_AGENTS[0] as Row])
+  const ui = await mountPane($, 'terminal', 96)
+  await clock.advance(1000)
+  expect(textOf(await ui.drawn())).toContain('1s  waiting for first reply')
+  await clock.advance(1000)
+  expect(textOf(await ui.drawn())).toContain('2s  waiting for first reply')
+})
+
+test('draws up to 100 entries on the terminal and counts the rest', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx, jobs(120, 0))
+  const terminal = textOf(await (await mountPane($, 'terminal', 96)).drawn())
+  expect(terminal).toContain('+20 more agents')
+  expect(terminal).toContain('120 running')
+  const desktop = textOf(await (await mountPane($)).drawn())
+  expect(desktop).toContain('+86 more agents')
+})
+
+test('long titles and models are cut on the terminal', async (...ctx) => {
+  const [$] = ctx
+  const long = 'an-extraordinarily-long-agent-type-name'
+  await bootGraph(ctx, [{ id: 'a1', type: long, description: 'Work', status: 'running' }])
+  queueUsage('a1', usage('claude-an-experimental-model-name', 100, 10, 0, 0))
+  await step($, 'a1')
+  const tree = await (await mountPane($, 'terminal', 96)).drawn()
+  expect(long).toHaveLength(39)
+  expect(leafText(tree, `${long.slice(0, 31)}…`)?.props?.bold).toBe(true)
+  const model = leafTextsOf(tree).map(textOf).find(t => t.startsWith('an-experimental'))
+  expect([...(model ?? '')]).toHaveLength(18)
+  expect(model?.endsWith('…')).toBe(true)
+  expect(textsOf(tree).some(t => t.props?.wrap === 'truncate')).toBe(true)
+})
+
+test('the pane leaves other surfaces to the engine', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx)
+  expect(await (await mountPane($, 'mobile')).drawn()).toMatchObject({ type: 'engine', ref: 7 })
+})
+
+test('a spawn whose surfaces lookup rejects still schedules the follow-up refresh', async (...ctx) => {
+  const [$] = ctx
+  let list: Row[] = []
+  const clock = await boot(ctx, () => list, NOW, undefined, false)
+  probes.surfacesFail = true
+  await $.tool.call(SPAWN)
+  probes.surfacesFail = false
+  list = [{ id: 'a1', type: 'explorer', description: 'Map the auth module', status: 'running' }]
+  const before = probes.agentList
+  await clock.advance(300)
+  expect(probes.agentList).toBeGreaterThan(before)
+  expect(opens.calls).toEqual([])
+})
+
+test('an agent that finished between two polls does not show a late-arriving last tool on either surface', async (...ctx) => {
+  const [$] = ctx
+  let list: Row[] = [{ id: 'a1', type: 'explorer', description: 'Map the auth module', status: 'running' }]
+  const clock = await boot(ctx, () => list, NOW, undefined, false, ['terminal', 'desktop'])
+  await $.turn.complete(TURN_DONE('zz'))
+  list = [{ id: 'a1', type: 'explorer', description: 'Map the auth module', status: 'completed' }]
+  await clock.advance(1000)
+  await $.tool.call({ tool: 'Read', file_path: '/x/foo.ts', agentId: 'a1' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/x/main.ts' } as never)
+  const terminal = await terminalLines($, 96)
+  expect(terminal.some(l => l.includes('✓ explorer'))).toBe(true)
+  expect(terminal.join('\n')).not.toContain('Read foo.ts')
+  expect(terminal.join('\n')).toContain('Read main.ts')
+  const desktop = textOf(await (await mountPane($)).drawn())
+  expect(desktop).toContain('<g class="done">')
+  expect(desktop).not.toContain('Read foo.ts')
+  expect(desktop).toContain('Read main.ts')
+})
+
+test('the tier follows the width left of the depth gutter, so a full metrics line is never cut', async (...ctx) => {
+  const [$] = ctx
+  const list: Row[] = [
+    { id: 'a1', type: 'explorer', description: 'Map', status: 'running' },
+    { id: 'a4', type: 'tester', description: 'Run', status: 'running', parentId: 'a1' },
+  ]
+  const clock = await boot(ctx, () => list, NOW, undefined, false, ['terminal'])
+  await $.turn.complete(TURN_DONE('zz'))
+  const usages = [usage('gpt-9', 1, 80, 0, 0)]
+  for (let i = 1; i < 119; i += 1) usages.push(usage('claude-sonnet-5-5', 350_000, 80, 0, 0))
+  usages.push(usage('claude-sonnet-5-5', 10_000, 380, 230_000, 10_000))
+  queueUsage('a4', ...usages)
+  for (let i = 0; i < 120; i += 1) await step($, 'a4', i)
+  await clock.advance(754_000)
+  const lines = await terminalLines($, 82)
+  const counts = lines.findIndex(l => l.includes('12m 34s  120 steps  9.9k tok'))
+  expect(counts).toBeGreaterThan(0)
+  expect(lines[counts]).not.toContain('ctx')
+  const ctxLine = lines[counts + 1] ?? ''
+  expect(ctxLine).toContain('ctx 250k 25% ━━──────  cache 92%')
+  expect(ctxLine).toMatch(/~\$\d+\.\d\d\+$/)
+  for (const line of lines.filter(l => l.includes('tester') || l.includes('tok') || l.includes('ctx'))) {
+    expect([...line].length).toBeLessThanOrEqual(82)
+  }
+  const wide = await terminalLines($, 100)
+  expect(wide.some(l => l.includes('120 steps') && l.includes('ctx 250k'))).toBe(true)
+})
+
+test('a desktop card says 1 step in the singular', async (...ctx) => {
+  const [$] = ctx
+  await bootGraph(ctx, [GRAPH_AGENTS[0] as Row])
+  await step($, 'a1')
+  const text = textOf(await (await mountPane($)).drawn())
+  expect(text).toContain('1 step')
+  expect(text).not.toContain('1 steps')
 })

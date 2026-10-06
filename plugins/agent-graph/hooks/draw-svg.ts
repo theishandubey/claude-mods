@@ -122,7 +122,7 @@ export const drawSvg = (root: GraphNode, slots: number, depth: number) => {
         metrics +
         gauge +
         `<text class="desc" x="${x + 12}" y="${y + 82}">${esc(truncate(desc, 31))}</text>` +
-        `<text class="act" x="${x + 12}" y="${y + 97}">${esc(truncate(n.activity, 30))}</text>` +
+        `<text class="act" x="${x + 12}" y="${y + 97}">${esc(n.status === 'running' || n.depth === 0 ? truncate(n.activity, 30) : '')}</text>` +
         `</g>`,
     )
   })
