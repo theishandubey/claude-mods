@@ -1,0 +1,1 @@
+{ "name": "statusline", "version": "0.2.0", "author": { "name": "Ishan Dubey" }, "description": "Status line under the prompt on the terminal: model and effort, working directory and git state", "types": "./types/index.d.ts" }
