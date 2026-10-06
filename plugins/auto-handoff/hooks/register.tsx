@@ -477,7 +477,7 @@ async function statusOf($: EngineInterface, t: Thresholds) {
 }
 
 const guardFailure = ($: EngineInterface, tool: string, next: Caught) => {
-  const detail = next.error.message || next.error.kind
+  const detail = (next.error.message || next.error.kind).slice(0, 200)
   $.ui.log(`auto-handoff: ${tool} guard failed: ${detail}`)
   return detail
 }
@@ -626,7 +626,11 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Bash' }, ($, e, next) => {
     if (!enabled || request?.open !== true || !String(e.command).includes(BUNDLE_DIR)) return next(e)
     return { deny: DENY.bash(request.root) }
-  }).catch(($, e, next) => refusal($, 'Bash', e, next, c => request?.open === true && String(c.command).includes(BUNDLE_DIR)) ?? next(e))
+  }).catch(($, e, next) => {
+    guardFailure($, 'Bash', next)
+    if (!next.called && enabled && request?.open === true && String(e.command).includes(BUNDLE_DIR)) return { deny: DENY.bash(request.root) }
+    return next(e)
+  })
 
   on('tool.check', async ($, e, next) => {
     const below = await next(e)
