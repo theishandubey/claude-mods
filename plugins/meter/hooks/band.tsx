@@ -125,10 +125,12 @@ const rowWidth = (segments: readonly Segment[], gap: number) =>
   segments.reduce((n, s) => n + s.items.reduce((w, item) => w + itemWidth(item), 0) + s.items.length - 1, 0) +
   gap * Math.max(0, segments.length - 1)
 
+const TERMINAL_INSET = 2
+
 const pickTerminal = (data: BandData, opts: BandOpts) => {
   for (const detail of BAND_LEVELS) {
     const segments = buildSegments(data, detail, opts)
-    if (rowWidth(segments, detail.gap) <= opts.bodyColumns) return { detail, segments, isFloor: false }
+    if (rowWidth(segments, detail.gap) <= opts.bodyColumns - TERMINAL_INSET) return { detail, segments, isFloor: false }
   }
   const detail = BAND_LEVELS.at(-1)!
 
@@ -189,7 +191,7 @@ export const drawBand = (els: Els, data: BandData, opts: BandOpts): RenderElemen
         key="card"
         position="absolute"
         top={-(details.length + 2)}
-        left={0}
+        left={TERMINAL_INSET}
         display="none"
         hover={{ display: 'flex', scope: 'meter' }}
         flexDirection="column"
@@ -223,7 +225,12 @@ export const drawBand = (els: Els, data: BandData, opts: BandOpts): RenderElemen
       : runsText(Text, item.key, item.runs)
 
   return (
-    <Box key="meter" flexDirection="column" marginTop={isTerminal ? 1 : undefined} hover={{ scope: 'meter' }}>
+    <Box
+      key="meter"
+      flexDirection="column"
+      marginTop={isTerminal ? 1 : undefined}
+      paddingLeft={isTerminal ? TERMINAL_INSET : undefined}
+      hover={{ scope: 'meter' }}>
       {card}
       <Box key="row" flexWrap={isFloor || !isTerminal ? 'wrap' : 'nowrap'} alignItems="center" columnGap={detail.gap}>
         {segments.map(s => (

@@ -83,6 +83,7 @@ for (const bodyColumns of [140, 100, 60]) {
 test('leaves the desktop band without a top margin', async ($, on) => {
   const tree = await drawBand($, on, 'desktop', 140)
   expect(findNode(tree, n => n.type === 'Box' && n.props?.key === 'meter')?.props?.marginTop).toBeUndefined()
+  expect(findNode(tree, n => n.type === 'Box' && n.props?.key === 'meter')?.props?.paddingLeft).toBeUndefined()
 })
 
 test('draws the wide band on the terminal', async ($, on) => {
@@ -120,8 +121,10 @@ test('draws the medium band on the terminal', async ($, on) => {
   expect(row.length).toBeLessThanOrEqual(100)
 })
 
+const INSET = 2
+
 test('draws the narrow band on the terminal', async ($, on) => {
-  const { row } = splitCard(flatten(await drawBand($, on, 'terminal', 60)))
+  const { row } = splitCard(flatten(await drawBand($, on, 'terminal', 60 + INSET)))
   expect(row).toContain('Context')
   expect(row).toContain('46%')
   expect(row).toContain('5h 24%')
@@ -150,7 +153,7 @@ const FIT_LEVELS: [number, string][] = [
 
 for (const [cols, expected] of FIT_LEVELS) {
   test(`fits the richest band layout in ${cols} columns without wrapping`, async ($, on) => {
-    const tree = await drawBand($, on, 'terminal', cols, { effort: 'high' })
+    const tree = await drawBand($, on, 'terminal', cols + INSET, { effort: 'high' })
     const { row } = splitCard(flatten(tree))
     expect(row).toBe(expected)
     expect(row.length).toBeLessThanOrEqual(cols)
@@ -230,10 +233,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
 }
 
 for (const [cols, expected] of [
-  [FIT_LEVELS[0]![1].length, FIT_LEVELS[0]![1]],
-  [FIT_LEVELS[0]![1].length - 1, FIT_LEVELS[1]![1]],
+  [FIT_LEVELS[0]![1].length + INSET, FIT_LEVELS[0]![1]],
+  [FIT_LEVELS[0]![1].length + INSET - 1, FIT_LEVELS[1]![1]],
 ] as const) {
-  test(`picks the band layout that ${cols === expected.length ? 'exactly fills' : 'fits under'} ${cols} columns`, async ($, on) => {
+  test(`picks the band layout that ${cols === expected.length + INSET ? 'exactly fills' : 'fits under'} ${cols} columns`, async ($, on) => {
     expect(splitCard(flatten(await drawBand($, on, 'terminal', cols))).row).toBe(expected)
   })
 }
@@ -244,10 +247,11 @@ test('reveals the terminal hover card above the band', async ($, on) => {
   const card = findNode(tree, n => n.type === 'Box' && n.props?.display === 'none')
   expect(band?.hover).toEqual({ scope: 'meter' })
   expect(band?.props?.marginTop).toBe(1)
+  expect(band?.props?.paddingLeft).toBe(INSET)
   expect(card?.props).toMatchObject({
     position: 'absolute',
     top: -9,
-    left: 0,
+    left: INSET,
     borderStyle: 'round',
     borderDimColor: true,
     paddingX: 1,
