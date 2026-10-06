@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderChildren } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type {
   AgentStats,
@@ -11,9 +11,24 @@ import type {
   Trends,
   TurnStats,
 } from '../types'
-import { SVG_COLORS, clean, fmtDuration, fmtTokens, hitColor, hitRate, limitLabel, loadColor } from './format'
+import { drawBand } from './band'
+import { clean } from './format'
+import {
+  EMPTY_MODEL,
+  addAgentStep,
+  addAnswer,
+  addCompaction,
+  addCost,
+  addLimitSamples,
+  addStep,
+  addTool,
+  addTurn,
+  keepSelection,
+  resolveModel,
+  selectModel,
+  toSnap,
+} from './metrics'
 import { drawPane } from './pane'
-import { addAgentStep, addCompaction, addCost, addLimitSamples, addStep, addTool, addTurn, toSnap } from './metrics'
 
 const cacheAtom = atom({ plugin: 'meter', key: 'cache' } as const, null)
 const measureAtom = atom({ plugin: 'meter', key: 'measure' } as const, null)
@@ -27,9 +42,6 @@ const EMPTY_REQUESTS: RequestStats = {
   byModel: {},
   noResponse: 0,
   history: [],
-  lastModel: null,
-  requestedModel: null,
-  effort: null,
   messageCount: 0,
 }
 const EMPTY_TURNS: TurnStats = { count: 0, totalMs: 0, longestMs: 0, aborted: 0, errored: 0, refused: 0, recent: [] }
@@ -47,6 +59,7 @@ const compactionsAtom = atom({ plugin: 'meter', key: 'compactions' } as const, E
 const trendsAtom = atom({ plugin: 'meter', key: 'trends' } as const, EMPTY_TRENDS)
 const breakdownAtom = atom({ plugin: 'meter', key: 'breakdown' } as const, EMPTY_BREAKDOWN)
 const infoAtom = atom({ plugin: 'meter', key: 'info' } as const, null)
+const modelAtom = atom({ plugin: 'meter', key: 'model' } as const, EMPTY_MODEL)
 const expandedAtom = atom({ plugin: 'meter', key: 'expanded' } as const, [])
 const epochAtom = atom({ plugin: 'meter', key: 'epoch' } as const, 0)
 
@@ -55,13 +68,10 @@ const TITLE = 'Meter'
 
 const STALE_LOADING_MS = 60_000
 const AGENTS_LIST_MAX = 50
-const CACHE_TTL_MS = 60 * 60 * 1000
-const DESKTOP_WIDE = 80
-const WIDE = 140
-const NARROW = 100
 
 let needsRegister = false
 let needsSummary = false
+let modelTicket = 0
 
 const toMeasure = (m: Measure): Measure => ({
   context: { tokens: m.context.tokens, window: m.context.window, percent: m.context.percent },
@@ -81,6 +91,14 @@ async function openMeter($: EngineInterface) {
 
 const text = (r: PromiseSettledResult<string>, fallback: string) =>
   r.status === 'fulfilled' ? clean(r.value) : fallback
+
+async function refreshModel($: EngineInterface) {
+  const ticket = ++modelTicket
+  const at = await $.clock.now()
+  const id = clean(await $.session.model())
+  if (id.trim() === '' || ticket !== modelTicket) return
+  await update($, modelAtom, m => selectModel(m, id, at))
+}
 
 async function refreshAgents($: EngineInterface, epoch: number) {
   try {
@@ -111,10 +129,9 @@ async function refreshDetails($: EngineInterface, detail: 'full' | 'summary') {
 
   try {
     const epoch = await read($, epochAtom)
-    const [id, version, model, turns, cwd, first] = await Promise.allSettled([
+    const [id, version, turns, cwd, first] = await Promise.allSettled([
       $.session.id(),
       $.session.version(),
-      $.session.model(),
       $.session.turns(),
       $.session.cwd(),
       $.session.usage({ breakdown: detail }),
@@ -138,7 +155,6 @@ async function refreshDetails($: EngineInterface, detail: 'full' | 'summary') {
       id: text(id, prev?.id ?? '-'),
       version: version.status === 'fulfilled' ? clean(version.value.version) : (prev?.version ?? '-'),
       ...(version.status === 'fulfilled' && version.value.builtAt !== undefined && { builtAt: clean(version.value.builtAt) }),
-      model: text(model, prev?.model ?? '-'),
       startedAt: usage.status === 'fulfilled' ? usage.value.startedAt : (prev?.startedAt ?? at),
       prompts: turns.status === 'fulfilled' ? turns.value : (prev?.prompts ?? 0),
       cwd: text(cwd, prev?.cwd ?? '-'),
@@ -171,6 +187,7 @@ async function resetSession($: EngineInterface) {
   await update($, trendsAtom, t => ({ ...EMPTY_TRENDS, limits: t.limits }))
   await update($, breakdownAtom, () => EMPTY_BREAKDOWN)
   await update($, infoAtom, () => null)
+  await update($, modelAtom, keepSelection)
 }
 
 async function countAfterReset($: EngineInterface) {
@@ -209,6 +226,7 @@ export const register: Register = on => {
       await update($, nowAtom, () => t)
     })
     registerCommand($)
+    void refreshModel($).catch(() => {})
 
     return next(e)
   })
@@ -220,7 +238,10 @@ export const register: Register = on => {
       await resetSession($)
     }
     const result = await next(e)
-    if (isReset) needsSummary = true
+    if (isReset) {
+      needsSummary = true
+      void refreshModel($).catch(() => {})
+    }
 
     return result
   })
@@ -231,8 +252,17 @@ export const register: Register = on => {
       registerCommand($)
     }
     void countAfterReset($).catch(() => {})
+    void refreshModel($).catch(() => {})
 
     return next(e)
+  })
+
+  on('command.run', { command: 'model' }, async ($, e, next) => {
+    try {
+      return await next(e)
+    } finally {
+      void refreshModel($).catch(() => {})
+    }
   })
 
   on('command.run', { command: 'meter' }, async $ => {
@@ -255,6 +285,7 @@ export const register: Register = on => {
       trends: await read($, trendsAtom),
       breakdown: await read($, breakdownAtom),
       info: await read($, infoAtom),
+      model: resolveModel(await read($, modelAtom)),
       expanded: await read($, expandedAtom),
     }
     await read($, nowAtom)
@@ -303,8 +334,15 @@ export const register: Register = on => {
         totalWrite: (prev?.totalWrite ?? 0) + usage.cache_creation_input_tokens,
         totalUncached: (prev?.totalUncached ?? 0) + usage.input_tokens,
         lastAt: t1,
-        model: clean(usage.model),
       }))
+      await update($, modelAtom, m =>
+        addAnswer(m, {
+          answered: usage.model,
+          requested: e.model,
+          effort: e.effort === undefined ? null : String(e.effort),
+          requestedAt: t0,
+        }),
+      )
     }
     if (agentId !== undefined && usage) {
       const id = clean(agentId)
@@ -318,8 +356,6 @@ export const register: Register = on => {
         at: t1,
         ms: t1 - t0,
         usage,
-        requested: e.model,
-        effort: e.effort === undefined ? null : String(e.effort),
         messageCount: e.messageCount,
         isAgent: agentId !== undefined,
       }),
@@ -378,209 +414,19 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.surface !== 'desktop' && e.surface !== 'terminal') return next(e)
+    if (e.props.hasSurvey) return next(e)
 
     const measure = await read($, measureAtom)
     const cache = await read($, cacheAtom)
+    const model = await read($, modelAtom)
     await read($, nowAtom)
     const now = await $.clock.now()
-    if (e.props.hasSurvey || (!measure && !cache)) {
-      return next(e)
-    }
-
-    const { Box, Text } = $.ui.resolve(e)
-    const svg = e.surface === 'desktop' ? $.ui.resolve(e) : null
-    const isTerminal = e.surface === 'terminal'
-    const cols = e.props.bodyColumns
-    const isWide = isTerminal ? cols >= WIDE : cols >= DESKTOP_WIDE
-    const isNarrow = isTerminal && cols < NARROW
-    const showContextBar = isTerminal ? !isNarrow : true
-    const showLimitBars = isWide
-    const cells = isWide ? 10 : 6
-
-    const gauge = (pct: number, color: string | undefined, key: string) => {
-      const ratio = Math.min(Math.max(pct, 0), 100) / 100
-      if (svg) {
-        const { Svg } = svg
-        const w = 44
-        const fill = ratio === 0 ? 0 : Math.max(3, Math.round(ratio * w))
-        return (
-          <Svg
-            key={key}
-            width={w}
-            height={6}
-            alt={`${Math.round(pct)}%`}
-            source={`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="6" viewBox="0 0 ${w} 6"><rect width="${w}" height="6" rx="3" fill="rgba(128,128,128,0.28)"/><rect width="${fill}" height="6" rx="3" fill="${color ? SVG_COLORS[color] : 'rgba(128,128,128,0.6)'}"/></svg>`}
-          />
-        )
-      }
-      const filled = ratio === 0 ? 0 : Math.max(1, Math.round(ratio * cells))
-      return (
-        <Text key={key}>
-          <Text color={color} dimColor={!color}>{'━'.repeat(filled)}</Text>
-          <Text dimColor>{'━'.repeat(cells - filled)}</Text>
-        </Text>
-      )
-    }
-
-    const segment = (key: string, parts: RenderChildren[]) => (
-      <Box key={key} alignItems="center" columnGap={1}>
-        {parts.filter(p => p !== null && p !== undefined && p !== false)}
-      </Box>
+    const tree = drawBand(
+      $.ui.resolve(e),
+      { measure, cache, model: resolveModel(model) },
+      { surface: e.surface, bodyColumns: e.props.bodyColumns, now, isWorking: e.props.isWorking },
     )
-    const label = (text: string) => <Text key="label" dimColor>{text}</Text>
 
-    const segments: RenderChildren[] = []
-
-    const ctx = measure?.context
-    if (ctx) {
-      const pct = ctx.percent
-      segments.push(
-        segment('ctx', pct === undefined
-          ? [label('Context'), <Text key="v" dimColor>{fmtTokens(ctx.window)} window</Text>]
-          : [
-              label('Context'),
-              showContextBar ? gauge(pct, loadColor(pct), 'bar') : null,
-              <Text key="v" color={loadColor(pct)} bold>{pct}%</Text>,
-              isTerminal && isWide && ctx.tokens !== undefined
-                ? <Text key="t" dimColor>{`  ${fmtTokens(ctx.tokens)} / ${fmtTokens(ctx.window)}`}</Text>
-                : null,
-            ]),
-      )
-    }
-
-    const idle = cache ? Math.max(0, now - cache.lastAt) : 0
-    const ttlLeft = CACHE_TTL_MS - idle
-    if (cache) {
-      const hit = hitRate(cache.lastRead, cache.lastWrite, cache.lastUncached)
-      const state = e.props.isWorking
-        ? { dot: 'success', text: 'live', short: 'live' }
-        : ttlLeft > 0
-          ? { dot: ttlLeft < 10 * 60000 ? 'warning' : 'success', text: `warm ${fmtDuration(ttlLeft)}`, short: fmtDuration(ttlLeft) }
-          : { dot: 'error', text: 'cold', short: 'cold' }
-      segments.push(
-        isTerminal
-          ? segment('cache', [
-              label('Cache'),
-              hit === null
-                ? <Text key="v" dimColor>-</Text>
-                : <Text key="v">
-                    <Text color={hitColor(hit)} bold>{hit}%</Text>
-                    {isNarrow ? null : <Text dimColor> hit</Text>}
-                  </Text>,
-              <Text key="s">
-                <Text color={state.dot}>{isNarrow ? ' ●' : '●'}</Text>
-                <Text dimColor> {isNarrow ? state.short : state.text}</Text>
-              </Text>,
-            ])
-          : segment('cache', [
-              label('Cache'),
-              hit === null
-                ? <Text key="v" dimColor>-</Text>
-                : <Text key="v">
-                    <Text color={hitColor(hit)} bold>{hit}%</Text>
-                    <Text dimColor> hit</Text>
-                  </Text>,
-              <Text key="s">
-                <Text color={state.dot}> ●</Text>
-                <Text dimColor> {state.text}</Text>
-              </Text>,
-            ]),
-      )
-    }
-
-    for (const l of measure?.rateLimits ?? []) {
-      const pct = Math.round(l.percentUsed)
-      const resetIn = l.resetsAt ? Date.parse(l.resetsAt) - now : NaN
-      const isStale = Number.isFinite(resetIn) && resetIn <= 0
-      const color = isStale ? undefined : loadColor(pct)
-      const showReset = resetIn > 0 && !isNarrow
-      segments.push(
-        segment(`limit-${l.kind}`, [
-          label(limitLabel(l.kind)),
-          showLimitBars ? gauge(pct, color, 'bar') : null,
-          <Text key="v" color={color} dimColor={isStale} bold={!isStale}>{pct}%</Text>,
-          showReset
-            ? <Text key="r" dimColor>{isTerminal ? `  ↻ ${fmtDuration(resetIn)}` : ` ↻ ${fmtDuration(resetIn)}`}</Text>
-            : null,
-        ]),
-      )
-    }
-
-    if (measure?.cost) {
-      segments.push(
-        segment('cost', [
-          isNarrow ? null : label('Cost'),
-          <Text key="v" bold>${measure.cost.usd.toFixed(2)}</Text>,
-        ]),
-      )
-    }
-
-    const details: [string, string][] = []
-    if (ctx?.tokens !== undefined) {
-      details.push(['Context', `${ctx.tokens.toLocaleString()} of ${ctx.window.toLocaleString()} tokens`])
-    }
-    if (cache) {
-      details.push(['Last request', `${fmtTokens(cache.lastRead)} read · ${fmtTokens(cache.lastWrite)} written · ${fmtTokens(cache.lastUncached)} uncached`])
-      const sess = hitRate(cache.totalRead, cache.totalWrite, cache.totalUncached)
-      details.push(['Session cache', `${sess ?? '-'}% hit · ${fmtTokens(cache.totalRead)} read · ${fmtTokens(cache.totalWrite)} written`])
-      details.push(['Cache TTL', ttlLeft > 0 ? `~${fmtDuration(ttlLeft)} left (idle ${fmtDuration(idle)}, assumes 1h)` : `expired ${fmtDuration(-ttlLeft)} ago`])
-      details.push(['Model', cache.model])
-    }
-    for (const l of measure?.rateLimits ?? []) {
-      if (l.resetsAt && Date.parse(l.resetsAt) > now) {
-        const at = new Date(l.resetsAt)
-        details.push([`${limitLabel(l.kind)} limit`, `${Math.round(l.percentUsed)}% used · resets ${at.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`])
-      }
-    }
-    const labelWidth = Math.max(...details.map(([k]) => k.length))
-
-    const card =
-      details.length === 0 ? null : isTerminal ? (
-        <Box
-          key="card"
-          position="absolute"
-          top={-(details.length + 2)}
-          left={0}
-          display="none"
-          hover={{ display: 'flex', scope: 'meter' }}
-          flexDirection="column"
-          borderStyle="round"
-          borderDimColor
-          paddingX={1}
-        >
-          {details.map(([k, v]) => (
-            <Box key={k}>
-              <Text dimColor>{k.padEnd(labelWidth + 2)}</Text>
-              <Text wrap="truncate">{v}</Text>
-            </Box>
-          ))}
-        </Box>
-      ) : (
-        <Box
-          key="card"
-          display="none"
-          hover={{ display: 'flex', scope: 'meter' }}
-          flexDirection="column"
-          marginBottom={1}
-        >
-          {details.map(([k, v]) => (
-            <Box key={k} columnGap={2}>
-              <Box width={labelWidth + 1}>
-                <Text dimColor>{k}</Text>
-              </Box>
-              <Text>{v}</Text>
-            </Box>
-          ))}
-        </Box>
-      )
-
-    return (
-      <Box key="meter" flexDirection="column" hover={{ scope: 'meter' }}>
-        {card}
-        <Box key="row" flexWrap="wrap" alignItems="center" columnGap={isNarrow ? 2 : 3}>
-          {segments}
-        </Box>
-      </Box>
-    )
+    return tree ?? next(e)
   })
 }

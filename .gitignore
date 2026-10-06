@@ -5,3 +5,4 @@ plugins/*/.claude-plugin/types/
 .claude/agent-memory-local/
 .claude/worktrees/
 .claude/settings.local.json
+plans/

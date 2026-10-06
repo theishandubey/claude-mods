@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { fmtTokens, fmtTokens1 } from './format'
+import { SVG_COLORS, fmtTokens, fmtTokens1, modelName } from './format'
 import { memoized } from './svg'
 
 const NOW = Date.parse('2026-10-04T12:00:00Z')
@@ -20,25 +20,27 @@ const flatten = (node: unknown, card = false): string => {
 
 type Surface = 'terminal' | 'desktop'
 
-const drawBand = async ($: any, on: any, surface: Surface, bodyColumns: number) => {
+type BandOptions = { effort?: string; requested?: string; answered?: string; limits?: unknown[] }
+
+const drawBand = async ($: any, on: any, surface: Surface, bodyColumns: number, options: BandOptions = {}) => {
   const clock = mock.clock(on, { now: NOW - 8 * 60000 })
   on('turn.step', async function* (_: unknown, e: { turnId: string; index: number }) {
     return {
       turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn',
-      usage: { input_tokens: 40, output_tokens: 10, cache_read_input_tokens: 88_000, cache_creation_input_tokens: 2_100, model: 'claude-opus-5-5' },
+      usage: { input_tokens: 40, output_tokens: 10, cache_read_input_tokens: 88_000, cache_creation_input_tokens: 2_100, model: options.answered ?? 'claude-opus-5-5' },
     }
   })
   on('session.measure', (_: unknown, e: { changed: unknown }) => ({ changed: e.changed }))
   await $.session.measure({
     context: { tokens: 91_234, window: 200_000, percent: 46 },
-    rateLimits: [
+    rateLimits: options.limits ?? [
       { kind: 'five_hour', percentUsed: 23.5, resetsAt: new Date(NOW + 130 * 60000).toISOString() },
       { kind: 'seven_day', percentUsed: 88, resetsAt: new Date(NOW + 76 * 3600000).toISOString() },
     ],
     cost: { usd: 1.8432 },
     changed: ['context', 'rateLimits', 'cost'],
   })
-  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })) {
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: options.requested ?? 'claude-opus-5-5', messageCount: 1, effort: options.effort })) {
   }
   await clock.advance(8 * 60000)
   const ui = await $.ui.mount({
@@ -50,7 +52,7 @@ const drawBand = async ($: any, on: any, surface: Surface, bodyColumns: number) 
   return ui.drawn()
 }
 
-const splitCard = (text: string) => ({ text, row: text.slice(text.indexOf('[/card]') + 8) })
+const splitCard = (text: string) => ({ text, row: text.slice(text.indexOf('[/card]') + 8).replace(/^\n/, '') })
 
 const findNode = (node: unknown, pred: (n: Node) => boolean): Node | undefined => {
   if (node === null || typeof node !== 'object') return undefined
@@ -66,19 +68,27 @@ for (const bodyColumns of [140, 100, 60]) {
   test(`draws on desktop at ${bodyColumns} columns`, async ($, on) => {
     const { text, row } = splitCard(flatten(await drawBand($, on, 'desktop', bodyColumns)))
     expect(text).toContain('~52m left (idle 8m, assumes 1h)')
+    expect(text).toContain('Opus 5.5')
+    expect(row).not.toContain('Opus 5.5')
     expect(row).toContain('Context')
     expect(row).toContain('46%')
     expect(row).toContain('Cache 98%')
     expect(row).toContain('$1.84')
-    expect(row).toContain('[bar 46%]')
+    expect(row).toContain('[bar Context 46%]')
     expect(row).toContain('↻ 2h 10m')
-    if (bodyColumns >= 80) expect(row).toContain('[bar 88%]')
+    if (bodyColumns >= 80) expect(row).toContain('[bar Week limit 88%]')
   })
 }
 
+test('leaves the desktop band without a top margin', async ($, on) => {
+  const tree = await drawBand($, on, 'desktop', 140)
+  expect(findNode(tree, n => n.type === 'Box' && n.props?.key === 'meter')?.props?.marginTop).toBeUndefined()
+  expect(findNode(tree, n => n.type === 'Box' && n.props?.key === 'meter')?.props?.paddingLeft).toBeUndefined()
+})
+
 test('draws the wide band on the terminal', async ($, on) => {
   const { text, row } = splitCard(flatten(await drawBand($, on, 'terminal', 140)))
-  expect(row).toContain('Context')
+  expect(row.startsWith('Context')).toBe(true)
   expect(row).toContain('46%')
   expect(row).toContain('91k / 200k')
   expect(row).toContain('Cache 98% hit')
@@ -89,8 +99,9 @@ test('draws the wide band on the terminal', async ($, on) => {
   expect(row).toContain('88%')
   expect(row).toContain('↻ 2h 10m')
   expect(row).toContain('↻ 3d 4h')
-  expect(row).toContain('Cost $1.84')
-  expect(count(row, '━')).toBe(30)
+  expect(row).toContain('$1.84')
+  expect(row).not.toContain('Cost')
+  expect(count(row, '━') + count(row, '─')).toBe(22)
   expect(row).not.toContain('[bar')
   expect(row.length).toBeLessThanOrEqual(140)
   expect(text).toContain('~52m left (idle 8m, assumes 1h)')
@@ -101,16 +112,20 @@ test('draws the medium band on the terminal', async ($, on) => {
   expect(row).toContain('Context')
   expect(row).toContain('46%')
   expect(row).not.toContain('91k / 200k')
-  expect(row).toContain('Cache 98% hit')
+  expect(row).toContain('Cache 98% hit ● warm 52m')
   expect(row).toContain('↻ 2h 10m')
   expect(row).toContain('↻ 3d 4h')
-  expect(row).toContain('Cost $1.84')
-  expect(count(row, '━')).toBe(6)
+  expect(row).toContain('$1.84')
+  expect(row).not.toContain('Cost')
+  expect(count(row, '━') + count(row, '─')).toBe(10)
   expect(row.length).toBeLessThanOrEqual(100)
 })
 
+const INSET = 2
+
 test('draws the narrow band on the terminal', async ($, on) => {
-  const { row } = splitCard(flatten(await drawBand($, on, 'terminal', 60)))
+  const { row } = splitCard(flatten(await drawBand($, on, 'terminal', 60 + INSET)))
+  expect(row).toContain('Context')
   expect(row).toContain('46%')
   expect(row).toContain('5h 24%')
   expect(row).toContain('Week 88%')
@@ -118,21 +133,125 @@ test('draws the narrow band on the terminal', async ($, on) => {
   expect(row).not.toContain('91k / 200k')
   expect(row).not.toContain('↻')
   expect(row).not.toContain('Cost')
-  expect(row).toContain('Cache 98%  ● 52m')
+  expect(row).toContain('Cache 98% ● 52m')
   expect(row).not.toContain('hit')
-  expect(count(row, '━')).toBe(0)
+  expect(count(row, '━') + count(row, '─')).toBe(6)
   expect(row.length).toBeLessThanOrEqual(60)
 })
+
+const FIT_LEVELS: [number, string][] = [
+  [140, 'Context ━━━━━───── 46% 91k / 200k   Cache 98% hit ● warm 52m   5h ━───── 24% ↻ 2h 10m   Week ━━━━━─ 88% ↻ 3d 4h   $1.84'],
+  [110, 'Context ━━━━━───── 46%   Cache 98% hit ● warm 52m   5h ━───── 24% ↻ 2h 10m   Week ━━━━━─ 88% ↻ 3d 4h   $1.84'],
+  [100, 'Context ━━━━━───── 46%   Cache 98% hit ● warm 52m   5h 24% ↻ 2h 10m   Week 88% ↻ 3d 4h   $1.84'],
+  [90, 'Context ━━━━━───── 46%   Cache 98% ● 52m   5h 24% ↻ 2h 10m   Week 88% ↻ 3d 4h   $1.84'],
+  [80, 'Context ━━━━━───── 46%   Cache 98% ● 52m   5h 24%   Week 88%   $1.84'],
+  [66, 'Context ━━━━━───── 46%  Cache 98% ● 52m  5h 24%  Week 88%  $1.84'],
+  [60, 'Context ━━━─── 46%  Cache 98% ● 52m  5h 24%  Week 88%  $1.84'],
+  [55, 'Context 46%  Cache 98% ● 52m  5h 24%  Week 88%  $1.84'],
+  [50, 'Ctx 46%  Cache 98% ● 52m  5h 24%  Week 88%  $1.84'],
+]
+
+for (const [cols, expected] of FIT_LEVELS) {
+  test(`fits the richest band layout in ${cols} columns without wrapping`, async ($, on) => {
+    const tree = await drawBand($, on, 'terminal', cols + INSET, { effort: 'high' })
+    const { row } = splitCard(flatten(tree))
+    expect(row).toBe(expected)
+    expect(row.length).toBeLessThanOrEqual(cols)
+    expect(findNode(tree, n => n.type === 'Box' && n.props?.key === 'row')?.props?.flexWrap).toBe('nowrap')
+  })
+}
+
+test('lets only the most compact band layout wrap', async ($, on) => {
+  const tree = await drawBand($, on, 'terminal', 40, { effort: 'high' })
+  const { row } = splitCard(flatten(tree))
+  expect(row).toBe('Ctx 46%  Cache 98% ● 52m  5h 24%  Week 88%  $1.84')
+  expect(findNode(tree, n => n.type === 'Box' && n.props?.key === 'row')?.props?.flexWrap).toBe('wrap')
+})
+
+test('drops a band layout level for a third limit instead of wrapping', async ($, on) => {
+  const limits = [
+    { kind: 'five_hour', percentUsed: 23.5, resetsAt: new Date(NOW + 130 * 60000).toISOString() },
+    { kind: 'seven_day', percentUsed: 88, resetsAt: new Date(NOW + 76 * 3600000).toISOString() },
+    { kind: 'spend_limit', percentUsed: 10, resetsAt: new Date(NOW + 3 * 3600000).toISOString() },
+  ]
+  const tree = await drawBand($, on, 'terminal', 140, { effort: 'high', limits })
+  const { row } = splitCard(flatten(tree))
+  expect(row).toContain('Spend')
+  expect(row).not.toContain('91k / 200k')
+  expect(row.length).toBeLessThanOrEqual(140)
+  expect(count(row, '━') + count(row, '─')).toBe(28)
+  expect(findNode(tree, n => n.type === 'Box' && n.props?.key === 'row')?.props?.flexWrap).toBe('nowrap')
+})
+
+test('colours a band value only when it is a warning or an error', async ($, on) => {
+  const tree = await drawBand($, on, 'terminal', 140)
+  const rest = findNode(tree, n => n.type === 'Text' && flatten(n) === '46%')
+  const alert = findNode(tree, n => n.type === 'Text' && flatten(n) === '88%')
+  expect(rest?.props?.color).toBeUndefined()
+  expect(rest?.props?.bold).toBe(false)
+  expect(alert?.props).toMatchObject({ color: 'error', bold: true })
+  const fill = findNode(tree, n => n.type === 'Text' && flatten(n) === '━'.repeat(5))
+  const track = findNode(tree, n => n.type === 'Text' && flatten(n) === '─'.repeat(5))
+  expect(fill?.props?.color).toBeUndefined()
+  expect(fill?.props?.dimColor).toBeUndefined()
+  expect(track?.props?.dimColor).toBe(true)
+})
+
+test('draws the desktop gauges from the palette at rest and from the alert colours otherwise', async ($, on) => {
+  const limits = [
+    { kind: 'five_hour', percentUsed: 60, resetsAt: new Date(NOW + 130 * 60000).toISOString() },
+    { kind: 'seven_day', percentUsed: 88, resetsAt: new Date(NOW + 76 * 3600000).toISOString() },
+  ]
+  const tree = await drawBand($, on, 'desktop', 140, { limits })
+  const source = (alt: string) => String(findNode(tree, n => n.type === 'Svg' && n.props?.alt === alt)?.props?.source)
+  expect(source('Context 46%')).toContain('class="s1"')
+  expect(source('5h limit 60%')).toContain(SVG_COLORS.warning)
+  expect(source('5h limit 60%')).not.toContain('class="s1"')
+  expect(source('Week limit 88%')).toContain(SVG_COLORS.error)
+})
+
+test('names the fallback model in the hover card and never in the band', async ($, on) => {
+  const tree = await drawBand($, on, 'terminal', 150, { effort: 'high', requested: 'claude-opus-5-5', answered: 'claude-sonnet-5-5' })
+  const { text, row } = splitCard(flatten(tree))
+  expect(text).toContain('Sonnet 5.5 · fallback from Opus 5.5 · high effort · claude-sonnet-5-5')
+  expect(row).not.toContain('Sonnet')
+  expect(row).not.toContain('fallback')
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`never puts the model in the band row on the ${surface}`, async ($, on) => {
+    const h = await startMeter($, on, { model: 'claude-opus-5-5' })
+    h.usage = { ...USAGE, model: 'claude-sonnet-5-5' }
+    await runStep($, { model: 'claude-opus-5-5' })
+    for (const cols of [140, 100, 60]) {
+      const { text, row } = await bandOf($, surface, cols)
+      expect(text).toContain('Model')
+      expect(row).toContain('Context')
+      for (const word of ['Opus', 'Sonnet', 'claude', 'fallback', 'high']) expect(row).not.toContain(word)
+    }
+  })
+}
+
+for (const [cols, expected] of [
+  [FIT_LEVELS[0]![1].length + INSET, FIT_LEVELS[0]![1]],
+  [FIT_LEVELS[0]![1].length + INSET - 1, FIT_LEVELS[1]![1]],
+] as const) {
+  test(`picks the band layout that ${cols === expected.length + INSET ? 'exactly fills' : 'fits under'} ${cols} columns`, async ($, on) => {
+    expect(splitCard(flatten(await drawBand($, on, 'terminal', cols))).row).toBe(expected)
+  })
+}
 
 test('reveals the terminal hover card above the band', async ($, on) => {
   const tree = await drawBand($, on, 'terminal', 140)
   const band = findNode(tree, n => n.type === 'Box' && n.props?.key === 'meter')
   const card = findNode(tree, n => n.type === 'Box' && n.props?.display === 'none')
   expect(band?.hover).toEqual({ scope: 'meter' })
+  expect(band?.props?.marginTop).toBe(1)
+  expect(band?.props?.paddingLeft).toBe(INSET)
   expect(card?.props).toMatchObject({
     position: 'absolute',
     top: -9,
-    left: 0,
+    left: INSET,
     borderStyle: 'round',
     borderDimColor: true,
     paddingX: 1,
@@ -140,14 +259,17 @@ test('reveals the terminal hover card above the band', async ($, on) => {
   expect(card?.hover).toEqual({ display: 'flex', scope: 'meter' })
   expect(flatten(card)).toContain('Context  ')
   expect(flatten(card)).toContain('91,234 of 200,000 tokens')
+  const first = findNode(card, n => n.type === 'Box' && n.props?.key === 'Model')
+  expect(flatten(first).startsWith('Model')).toBe(true)
+  expect(flatten(first)).toContain('claude-opus-5-5')
   expect(findNode(card, n => n.type === 'Text' && n.props?.wrap === 'truncate')).toBeDefined()
 })
 
-const mountProps = (surface: string = 'desktop') => ({
+const mountProps = (surface: string = 'desktop', bodyColumns = 140, hasSurvey = false) => ({
   plugin: 'meter',
   surface,
   component: 'AbovePrompt',
-  props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 140, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+  props: { hasSurvey, isWorking: false, maxRows: 10, bodyColumns, scroll: { offset: 0, bodyRows: 10 }, view: {} },
 }) as never
 
 for (const surface of ['terminal', 'desktop'] as const) {
@@ -184,6 +306,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const tree = await (await $.ui.mount(mountProps(surface))).drawn()
     const text = flatten(tree)
     const row = text.slice(text.indexOf('[/card]') + 8)
+    const card = text.slice(0, text.indexOf('[/card]'))
     const stale = findNode(tree, n => n.type === 'Text' && flatten(n) === '24%')
     const live = findNode(tree, n => n.type === 'Text' && flatten(n) === '88%')
     expect(stale?.props).toMatchObject({ dimColor: true, bold: false })
@@ -193,8 +316,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(row).toContain('24%')
     expect(row).not.toContain('↻ 0m')
     expect(row).toContain('↻ 3d 4h')
-    expect(text).not.toContain('5h limit')
-    expect(text).toContain('Week limit')
+    expect(card).not.toContain('5h limit')
+    expect(card).toContain('Week limit')
   })
 }
 
@@ -330,6 +453,7 @@ const harness = async ($: any, on: any, options: { isPlaced?: boolean; reason?: 
     sets: [] as string[],
     gate: null as Promise<void> | null,
     agentGate: null as Promise<void> | null,
+    modelGates: [] as Promise<void>[],
     ending: null as (() => Promise<void>) | null,
     completing: null as (() => void) | null,
     calling: null as (() => void) | null,
@@ -367,7 +491,12 @@ const harness = async ($: any, on: any, options: { isPlaced?: boolean; reason?: 
   })
   on('session.id', () => ({ value: h.info.id }))
   on('session.version', () => ({ value: { version: h.info.version, builtAt: h.info.builtAt } }))
-  on('session.model', () => ({ value: h.info.model }))
+  on('session.model', async () => {
+    const value = h.info.model
+    const gate = h.modelGates.shift()
+    if (gate) await gate
+    return { value }
+  })
   on('session.turns', () => ({ value: h.info.turns }))
   on('session.cwd', () => ({ value: h.info.cwd }))
   on('agent.list', async () => {
@@ -413,14 +542,17 @@ const harness = async ($: any, on: any, options: { isPlaced?: boolean; reason?: 
     return { result: 'fine' }
   })
   on('session.compact', () => h.compact as never)
+  on('command.run', { command: 'model' }, () => ({ text: 'ok' }))
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine draw'] }) as never)
   return h
 }
 
-const startMeter = async ($: any, on: any, options?: Parameters<typeof harness>[2] & { isFresh?: boolean }) => {
+const startMeter = async ($: any, on: any, options?: Parameters<typeof harness>[2] & { isFresh?: boolean; model?: string }) => {
   const h = await harness($, on, options)
   if (options?.isFresh) h.measure.context = { window: 200_000 } as never
+  if (options?.model) h.info.model = options.model
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await h.clock.settle()
   return h
 }
 
@@ -493,7 +625,8 @@ test('counts a main-thread step into the request totals and history', async ($, 
   expect(requests.main).toEqual({ input: 40, output: 10, cacheRead: 88_000, cacheWrite: 2_100, requests: 1 })
   expect(requests.byModel['claude-opus-5-5'].requests).toBe(1)
   expect(requests.history).toEqual([{ at: NOW + 1500, ms: 1500, hit: 98, output: 10 }])
-  expect(requests).toMatchObject({ effort: 'high', lastModel: 'claude-opus-5-5', requestedModel: 'claude-opus-5-5', messageCount: 3, noResponse: 0 })
+  expect(requests).toMatchObject({ messageCount: 3, noResponse: 0 })
+  expect(h.state.model).toMatchObject({ answered: 'claude-opus-5-5', requested: 'claude-opus-5-5', effort: 'high' })
   expect(requests.trackedSince).toBe(NOW)
 })
 
@@ -520,7 +653,7 @@ test('counts a subagent step into the agent totals and leaves the cache meter al
   expect(requests.agents).toEqual({ input: 40, output: 7, cacheRead: 88_000, cacheWrite: 2_100, requests: 1 })
   expect(requests.byModel['claude-sonnet-5-5'].requests).toBe(1)
   expect(requests.history).toHaveLength(1)
-  expect(requests.lastModel).toBe('claude-opus-5-5')
+  expect(h.state.model.answered).toBe('claude-opus-5-5')
   expect(h.state.agents.usage.a1).toMatchObject({ requests: 1, output: 7, model: 'claude-sonnet-5-5', lastAt: NOW })
   expect(h.state.agents.usage.a1).not.toHaveProperty('firstAt')
   expect(h.state.cache).toEqual(cacheBefore)
@@ -674,7 +807,7 @@ test('counts the context in full once and falls back to a summary estimate', asy
   await runMeter($)
   await h.clock.settle()
   expect(h.usageCalls.slice(1)).toEqual(['full', 'summary'])
-  expect(h.state.breakdown.snap).toMatchObject({ detail: 'summary', contextTokens: 91_234, percentage: 46, model: 'claude-opus-5-5' })
+  expect(h.state.breakdown.snap).toMatchObject({ detail: 'summary', contextTokens: 91_234, percentage: 46 })
   expect(h.state.breakdown.status).toEqual({ state: 'idle' })
   expect(h.state.info).toMatchObject({ id: h.info.id, version: '2.1.286', prompts: 12, cwd: '/work/claude-mods', startedAt: NOW - 134 * 60000 })
 })
@@ -862,7 +995,7 @@ const paint = (node: unknown, width: number): string[] => {
   if (el.type === 'Svg') return [`[svg ${p.alt}]`]
   if (el.type === 'Button') return [`[ ${p.label} ]`]
   if (el.type === 'Text') return ellipsize(inlineText(el), width, p.wrap)
-  const inner = width - (p.marginLeft ?? 0)
+  const inner = width - (p.marginLeft ?? 0) - (p.marginRight ?? 0)
   const pad = ' '.repeat(p.marginLeft ?? 0)
   const lead = Array.from({ length: p.marginTop ?? 0 }, () => '')
   const children = kids(el)
@@ -873,11 +1006,24 @@ const paint = (node: unknown, width: number): string[] => {
   const gap = p.columnGap ?? p.gap ?? 0
   const rowWidth = typeof p.width === 'number' ? p.width : inner
   const fixed = children.map(c => ((c as Paint).props?.width as number | undefined) ?? null)
-  const natural = children.map((c, i) => (fixed[i] ?? ((c as Paint).props?.flexGrow ? 0 : Math.min(naturalWidth(c), rowWidth))))
+  const isGrower = (i: number) => fixed[i] === null && Boolean((children[i] as Paint).props?.flexGrow)
+  const natural = children.map((c, i) => {
+    if (fixed[i] !== null) return fixed[i]!
+    const cp = (c as Paint).props ?? {}
+    const outer = naturalWidth(c) + (cp.marginRight ?? 0)
+
+    return Math.min(outer, rowWidth)
+  })
   const used = natural.reduce((a, b) => a + b, 0) + gap * Math.max(0, children.length - 1)
-  const growers = children.filter((c, i) => fixed[i] === null && (c as Paint).props?.flexGrow).length
-  const spare = Math.max(0, rowWidth - used)
-  const widths = natural.map((w, i) => (fixed[i] === null && (children[i] as Paint).props?.flexGrow ? Math.floor(spare / Math.max(1, growers)) : w))
+  const growers = children.filter((_, i) => isGrower(i)).length
+  const spare = Number.isFinite(rowWidth) ? Math.max(0, rowWidth - used) : 0
+  const overflow = used - rowWidth
+  const weights = natural.map((w, i) => w * ((children[i] as Paint).props?.flexShrink ?? 1))
+  const weighted = weights.reduce((a, b) => a + b, 0)
+  const widths = natural.map((w, i) => {
+    if (overflow > 0 && weighted > 0) return Math.max(0, w - Math.ceil((overflow * weights[i]!) / weighted))
+    return isGrower(i) ? w + Math.floor(spare / Math.max(1, growers)) : w
+  })
   const betweenExtra = p.justifyContent === 'space-between' && growers === 0 && children.length === 2 ? spare : 0
   const blocks = children.map((c, i) => {
     const lines = paint(c, widths[i]!)
@@ -887,7 +1033,7 @@ const paint = (node: unknown, width: number): string[] => {
   const height = Math.max(0, ...blocks.map(b => b.length))
   const rows = Array.from({ length: height }, (_, r) =>
     blocks
-      .map((b, i) => (b[r] ?? '').padEnd(typeof fixed[i] === 'number' || widths[i] !== natural[i] ? widths[i]! : naturalWidth(children[i])))
+      .map((b, i) => (b[r] ?? '').padEnd(typeof fixed[i] === 'number' || isGrower(i) || widths[i] !== natural[i] ? widths[i]! : naturalWidth(children[i])))
       .reduce((acc, cur, i) => acc + ' '.repeat(i === 0 ? 0 : gap + (i === 1 ? betweenExtra : 0)) + cur, ''),
   )
   return [...lead, ...rows.map(l => (pad + l).trimEnd())]
@@ -942,6 +1088,35 @@ const fillSession = async ($: any, h: Harness) => {
   await compact($, { trigger: 'auto' })
   await runMeter($)
   await h.clock.settle()
+}
+
+test('draws a 1% context gauge with one filled cell', async ($, on) => {
+  const h = await startMeter($, on)
+  h.measure.context = { tokens: 2_000, window: 200_000, percent: 1 }
+  await $.session.measure({ ...h.measure, changed: ['context'] } as never)
+  expect((await bandOf($)).row).toContain('Context ━───────── 1%')
+})
+
+test('draws the desktop cache sparkline from the palette at rest and from the alert colours otherwise', async ($, on) => {
+  const h = await startMeter($, on)
+  for (const read of [88_000, 0, 88_000]) {
+    h.usage = { ...USAGE, cache_read_input_tokens: read }
+    await runStep($)
+  }
+  const bars = collect(await (await mountPane($, 'desktop', 100)).drawn(), n => n.type === 'Svg' && String(n.props?.alt).startsWith('Cache hit'))[0]
+  const source = String(bars?.props?.source)
+  expect(source).toContain('<style>')
+  expect(source.match(/class="s1"/g)).toHaveLength(2)
+  expect(source).toContain(SVG_COLORS.error)
+})
+
+for (const [cols, cells] of [[100, 64], [64, 64], [48, 48]] as const) {
+  test(`draws the pane context gauge ${cells} cells wide at ${cols} columns`, async ($, on) => {
+    await startMeter($, on)
+    const tree = await (await mountPane($, 'terminal', cols)).drawn()
+    const widths = collect(tree, n => n.type === 'Text' && /^[━─]+$/.test(inlineText(n))).map(n => inlineText(n).length)
+    expect(Math.max(...widths)).toBe(cells)
+  })
 }
 
 test('draws the whole pane on the terminal at 72 columns', async ($, on) => {
@@ -1188,7 +1363,7 @@ test('names the model that answered when it differs from the one asked for', asy
   h.usage = { ...USAGE, model: 'claude-sonnet-5-5' }
   await runStep($, { model: 'claude-opus-5-5' })
   const text = paint(await (await mountPane($, 'terminal', 72)).drawn(), 72).join('\n')
-  expect(text).toContain('Sonnet 5.5 (fallback from Opus 5.5) · high')
+  expect(text).toContain('Sonnet 5.5  fallback from Opus 5.5  high effort')
 })
 
 test('says when the session is tracked from later than it started', async ($, on) => {
@@ -1366,6 +1541,25 @@ test('shows only a few memory files and servers until asked', async ($, on) => {
   expect(collect(tree, n => n.type === 'Button' && n.props?.key === 'more-mcp')[0]?.props?.label).toBe('+2 more')
 })
 
+test('keeps the numeric tool columns aligned when a 50 character tool name overflows', async ($, on) => {
+  const h = await startMeter($, on)
+  await runMeter($)
+  await h.clock.settle()
+  const long = `mcp__${'x'.repeat(45)}`
+  expect(long).toHaveLength(50)
+  await callTool($, { tool: long })
+  await callTool($, { tool: long })
+  await callTool($, { tool: 'Bash' })
+  const tree = await (await mountPane($, 'terminal', 72)).drawn()
+  const lines = lineCount(tree, n => n.props?.key === 'tools-rows', 72)
+  expect(lines).toHaveLength(3)
+  for (const l of lines) expect(l.length).toBeLessThanOrEqual(72)
+  const starts = lines.slice(1).map(l => [...l.matchAll(/\s(\d\S*)/g)].map(m => m.index! + 1))
+  expect(starts[0]!.length).toBeGreaterThanOrEqual(3)
+  expect(starts[1]).toEqual(starts[0])
+  for (const l of paint(tree, 72)) expect(l.length).toBeLessThanOrEqual(72)
+})
+
 test('ends a count that cannot read the breakdown as an error, not as one still running', async ($, on) => {
   const h = await startMeter($, on)
   h.breakdown = { ...breakdownFixture(), gridRows: undefined }
@@ -1518,12 +1712,12 @@ test('a main-thread step and a subagent step without usage leave the subagent us
   expect(h.agentLists).toBe(0)
 })
 
-test('a main-thread step writes the cache and the request totals once each, and a subagent step the agents and totals', async ($, on) => {
+test('a main-thread step writes the cache, the model and the request totals once each, and a subagent step the agents and totals', async ($, on) => {
   const h = await startMeter($, on)
   h.usage = USAGE
   h.sets = []
   await runStep($)
-  expect([...h.sets].sort()).toEqual(['cache', 'requests'])
+  expect([...h.sets].sort()).toEqual(['cache', 'model', 'requests'])
   await runStep($, { agentId: 'a1' })
   await h.clock.settle()
   h.sets = []
@@ -1584,15 +1778,30 @@ test('sizes the cache sparkline to the width, between 8 and 40 requests', async 
   const h = await startMeter($, on)
   h.usage = USAGE
   for (let i = 0; i < 50; i++) await runStep($, { index: i })
-  const label = async (cols: number) => {
+  const bars = async (cols: number) => {
     const ui = await mountPane($, 'terminal', cols)
     const text = paint(await ui.drawn(), cols).join('\n')
     await ui.unmount()
-    return /last (\d+) requests/.exec(text)?.[1]
+    return /^Trend +([▁-█]+)/m.exec(text)?.[1]?.length
   }
-  expect(await label(200)).toBe('40')
-  expect(await label(40)).toBe('16')
-  expect(await label(30)).toBe('8')
+  expect(await bars(200)).toBe(40)
+  expect(await bars(40)).toBe(8)
+  expect(await bars(30)).toBe(8)
+  expect(await bars(24)).toBe(8)
+})
+
+test('drops the sparkline label where it does not fit beside the bars', async ($, on) => {
+  const h = await startMeter($, on)
+  h.usage = USAGE
+  for (let i = 0; i < 50; i++) await runStep($, { index: i })
+  const trend = async (cols: number) => {
+    const ui = await mountPane($, 'terminal', cols)
+    const text = paint(await ui.drawn(), cols).join('\n')
+    await ui.unmount()
+    return /^Trend .*$/m.exec(text)?.[0]
+  }
+  expect(await trend(40)).toMatch(/^Trend +[▁-█]{8} {2}last 8 requests$/)
+  expect(await trend(30)).toMatch(/^Trend +[▁-█]{8}$/)
 })
 
 test('every vector the pane draws declares the svg namespace', async ($, on) => {
@@ -1666,17 +1875,20 @@ test('rounds token counts before choosing the unit', () => {
   expect(fmtTokens1(1_250_000)).toBe('1.3M')
 })
 
-for (const [requested, answered] of [
-  ['claude-opus-5-5[1m]', 'claude-opus-5-5'],
-  ['claude-opus-5-5', 'claude-opus-5-5-20260101'],
-  ['claude-opus-5-5[1m]', 'claude-opus-5-5-20260101'],
+for (const [requested, answered, shown] of [
+  ['claude-opus-5-5[1m]', 'claude-opus-5-5', 'Opus 5.5'],
+  ['claude-opus-5-5', 'claude-opus-5-5-20260101', 'Opus 5.5'],
+  ['claude-opus-5-5[1m]', 'claude-opus-5-5-20260101', 'Opus 5.5'],
+  ['us.anthropic.claude-opus-5-5-v1:0', 'claude-opus-5-5', 'Opus 5.5'],
+  ['claude-sonnet-4-20250514[1m]', 'claude-sonnet-4-20250514', 'Sonnet 4'],
+  ['claude-sonnet-4', 'claude-sonnet-4-20250514', 'Sonnet 4'],
 ] as const) {
   test(`does not call ${answered} a fallback from ${requested}`, async ($, on) => {
     const h = await startMeter($, on)
     h.usage = { ...USAGE, model: answered }
     await runStep($, { model: requested })
     const text = paint(await (await mountPane($, 'terminal', 72)).drawn(), 72).join('\n')
-    expect(text).toContain('Opus 5.5 · high')
+    expect(text).toContain(`${shown}  high effort`)
     expect(text).not.toContain('fallback')
   })
 }
@@ -1700,3 +1912,299 @@ test('leaves the build date out when the engine gives one that does not parse', 
   expect(text).not.toContain('NaN')
   expect(text).not.toContain('undefined')
 })
+
+const bandOf = async ($: any, surface: Surface = 'terminal', bodyColumns = 140) =>
+  splitCard(flatten(await (await $.ui.mount(mountProps(surface, bodyColumns))).drawn()))
+
+const modelRow = async ($: any) =>
+  flatten(findNode(await (await $.ui.mount(mountProps('terminal'))).drawn(), n => n.type === 'Box' && n.props?.key === 'Model'))
+
+test('shows the selected model in the hover card before any answer', async ($, on) => {
+  await startMeter($, on, { model: 'claude-opus-5-5[1m]' })
+  expect(await modelRow($)).toMatch(/^Model\s+Opus 5\.5 · claude-opus-5-5\[1m\]$/)
+})
+
+test('a /model switch shows the selected model in the hover card until the new one answers', async ($, on) => {
+  const h = await startMeter($, on)
+  h.usage = USAGE
+  await runStep($)
+  expect(await modelRow($)).toMatch(/^Model\s+Opus 5\.5 · high effort · claude-opus-5-5$/)
+  await h.clock.advance(60_000)
+  h.info.model = 'claude-sonnet-5-5'
+  const result = await $.command.run({ command: 'model' } as never)
+  await h.clock.settle()
+  expect(result.text).toBe('ok')
+  expect(h.state.model.selected).toBe('claude-sonnet-5-5')
+  expect(await modelRow($)).toMatch(/^Model\s+Sonnet 5\.5 · claude-sonnet-5-5$/)
+  h.usage = { ...USAGE, model: 'claude-sonnet-5-5' }
+  await runStep($, { model: 'claude-sonnet-5-5' })
+  expect(await modelRow($)).toMatch(/^Model\s+Sonnet 5\.5 · high effort · claude-sonnet-5-5$/)
+})
+
+test('an answer still streaming when /model switched keeps the selection until the new model answers', async ($, on) => {
+  const h = await startMeter($, on, { model: 'claude-opus-5-5' })
+  h.usage = USAGE
+  h.stepMs = 6000
+  const step = runStep($, { model: 'claude-opus-5-5' })
+  await h.clock.advance(5000)
+  h.info.model = 'claude-sonnet-5-5'
+  await $.command.run({ command: 'model' } as never)
+  await step
+  await h.clock.settle()
+  expect(h.state.model).toMatchObject({ selected: 'claude-sonnet-5-5', answered: 'claude-opus-5-5' })
+  expect(await modelRow($)).toMatch(/^Model\s+Sonnet 5\.5 · claude-sonnet-5-5$/)
+  expect((await bandOf($)).text).toContain('Sonnet 5.5 · claude-sonnet-5-5')
+  expect((await bandOf($)).text).not.toContain('Opus')
+})
+
+test('an answer requested after the /model switch wins over the selection', async ($, on) => {
+  const h = await startMeter($, on, { model: 'claude-opus-5-5' })
+  await h.clock.advance(1000)
+  h.info.model = 'claude-sonnet-5-5'
+  await $.command.run({ command: 'model' } as never)
+  await h.clock.settle()
+  h.stepMs = 500
+  h.usage = { ...USAGE, model: 'claude-sonnet-5-5' }
+  await runStep($, { model: 'claude-sonnet-5-5' })
+  expect(await modelRow($)).toMatch(/^Model\s+Sonnet 5\.5 · high effort · claude-sonnet-5-5$/)
+})
+
+test('an answer for the selected model wins even when it was requested before the switch', async ($, on) => {
+  const h = await startMeter($, on, { model: 'opus' })
+  h.usage = USAGE
+  h.stepMs = 3000
+  const step = runStep($, { model: 'claude-opus-5-5' })
+  await h.clock.advance(1000)
+  h.info.model = 'claude-opus-5-5[1m]'
+  await $.command.run({ command: 'model' } as never)
+  await step
+  await h.clock.settle()
+  expect(h.state.model.selectedAt).toBeGreaterThan(h.state.model.answeredRequestedAt)
+  expect(await modelRow($)).toMatch(/^Model\s+Opus 5\.5 · high effort · claude-opus-5-5$/)
+})
+
+test('a model switch that bypasses /model shows at the next turn start', async ($, on) => {
+  const h = await startMeter($, on)
+  h.usage = USAGE
+  await runStep($)
+  await h.clock.advance(60_000)
+  h.info.model = 'claude-sonnet-5-5'
+  expect(await modelRow($)).toMatch(/^Model\s+Opus 5\.5 · high effort/)
+  await $.turn.start({ text: 'hi', turnId: 't1' })
+  await h.clock.settle()
+  expect(await modelRow($)).toMatch(/^Model\s+Sonnet 5\.5 · claude-sonnet-5-5$/)
+  h.usage = { ...USAGE, model: 'claude-sonnet-5-5' }
+  await runStep($, { model: 'claude-sonnet-5-5' })
+  expect(await modelRow($)).toMatch(/^Model\s+Sonnet 5\.5 · high effort · claude-sonnet-5-5$/)
+})
+
+test('reading the same selected model again keeps the precise name of the model that answered', async ($, on) => {
+  const h = await startMeter($, on, { model: 'opus' })
+  h.usage = USAGE
+  await runStep($)
+  await h.clock.advance(60_000)
+  await $.turn.start({ text: 'hi', turnId: 't1' })
+  await h.clock.settle()
+  expect(await modelRow($)).toMatch(/^Model\s+Opus 5\.5 · high effort/)
+  expect(h.state.model.selectedAt).toBe(NOW)
+})
+
+test('keeps the model in the desktop hover card and out of the desktop band', async ($, on) => {
+  const h = await startMeter($, on, { model: 'claude-opus-5-5' })
+  h.usage = USAGE
+  await runStep($)
+  const { text, row } = await bandOf($, 'desktop')
+  expect(row).not.toContain('Opus 5.5')
+  expect(text).toContain('Opus 5.5 · high effort · claude-opus-5-5')
+})
+
+test('/clear keeps the selected model, drops the answer and leaves the band to the engine', async ($, on) => {
+  const h = await startMeter($, on, { model: 'claude-opus-5-5' })
+  h.usage = USAGE
+  await runStep($)
+  await clearSession($)
+  await h.clock.settle()
+  expect(h.state.model).toMatchObject({ selected: 'claude-opus-5-5', answered: null, effort: null })
+  expect(flatten(await (await $.ui.mount(mountProps('terminal'))).drawn())).toBe('engine draw')
+  expect(flatten(await (await $.ui.mount(mountProps('desktop'))).drawn())).toBe('engine draw')
+  const tree = await (await mountPane($, 'terminal', 72)).drawn()
+  expect(paint(tree, 72)[0]).toMatch(/^Opus 5\.5 +\[ Count \]$/)
+})
+
+test('a slower older model read cannot overwrite a newer one', async ($, on) => {
+  const h = await startMeter($, on, { model: 'claude-opus-5-5' })
+  let release = () => {}
+  h.modelGates.push(new Promise<void>(resolve => (release = resolve)))
+  await $.turn.start({ text: 'hi', turnId: 't1' })
+  h.info.model = 'claude-sonnet-5-5'
+  await $.turn.start({ text: 'hi', turnId: 't2' })
+  await h.clock.settle()
+  expect(h.state.model.selected).toBe('claude-sonnet-5-5')
+  release()
+  await h.clock.settle()
+  expect(h.state.model.selected).toBe('claude-sonnet-5-5')
+})
+
+for (const empty of ['', '   ', '\u0007\n']) {
+  test(`keeps the selected model when the engine reports ${JSON.stringify(empty)}`, async ($, on) => {
+    const h = await startMeter($, on, { model: 'claude-opus-5-5' })
+    h.sets = []
+    h.info.model = empty
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    await h.clock.settle()
+    expect(h.sets).not.toContain('model')
+    expect(h.state.model.selected).toBe('claude-opus-5-5')
+  })
+}
+
+for (const reason of ['clear', 'resume'] as const) {
+  test(`reads the selected model again after a ${reason} when it changed`, async ($, on) => {
+    const h = await startMeter($, on, { model: 'claude-opus-5-5' })
+    h.usage = USAGE
+    await runStep($)
+    await h.clock.advance(60_000)
+    h.info.model = 'claude-sonnet-5-5'
+    await $.session.end({ reason, sessionId: 's1', resume: { id: 's1' } } as never)
+    await h.clock.settle()
+    expect(h.state.model).toMatchObject({ selected: 'claude-sonnet-5-5', answered: null })
+    const tree = await (await mountPane($, 'terminal', 72)).drawn()
+    expect(paint(tree, 72)[0]).toMatch(/^Sonnet 5\.5 +\[ Count \]$/)
+  })
+}
+
+test('names an unknown model in full in the hover card and not in the band', async ($, on) => {
+  const id = `custom-model-${'x'.repeat(27)}`
+  await startMeter($, on, { model: id })
+  const { text, row } = await bandOf($)
+  expect(id).toHaveLength(40)
+  expect(row).not.toContain('custom-model')
+  expect(text).toContain(id)
+})
+
+for (const [id, name] of [
+  ['us.anthropic.claude-opus-5-5-v1:0', 'Opus 5.5'],
+  ['anthropic.claude-sonnet-4-5-20250929-v1:0', 'Sonnet 4.5'],
+  ['claude-opus-4-1-20250805', 'Opus 4.1'],
+  ['claude-opus-5-5', 'Opus 5.5'],
+  ['claude-opus-5-5[1m]', 'Opus 5.5'],
+  ['claude-opus-4-20250514', 'Opus 4'],
+  ['claude-sonnet-4', 'Sonnet 4'],
+  ['claude-sonnet-4[1m]', 'Sonnet 4'],
+  ['claude-sonnet-4-20250514[1m]', 'Sonnet 4'],
+  ['anthropic.claude-sonnet-4-20250514-v1:0', 'Sonnet 4'],
+  ['opus', 'Opus'],
+  ['SONNET[1m]', 'Sonnet'],
+  ['sonnet', 'Sonnet'],
+  ['opus[1m]', 'Opus'],
+  ['default', 'default'],
+  ['custom-model[beta]', 'custom-model'],
+  ['custom-model-20250514', 'custom-model'],
+  ['claude-opus-5-512', 'claude-opus-5-512'],
+] as const) {
+  test(`names the model ${JSON.stringify(id)} as ${JSON.stringify(name)}`, () => {
+    expect(modelName(id)).toBe(name)
+  })
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`leaves out the band segment of whatever is missing on the ${surface}`, async ($, on) => {
+    const h = await startMeter($, on)
+    const bare = (await bandOf($, surface)).row
+    expect(bare).toContain('Context')
+    expect(bare).not.toContain('Cache')
+    expect(bare).not.toContain('5h')
+    expect(bare).not.toContain('Week')
+    expect(bare).not.toContain('$')
+    h.measure.rateLimits = [{ kind: 'five_hour', percentUsed: 24, resetsAt: new Date(NOW + 3_600_000).toISOString() }]
+    h.measure.cost = { usd: 2 }
+    await $.session.measure({ ...h.measure, changed: ['rateLimits', 'cost'] } as never)
+    h.usage = USAGE
+    await runStep($)
+    const full = (await bandOf($, surface)).row
+    expect(full).toContain('Cache')
+    expect(full).toContain('5h')
+    expect(full).toContain('$2.00')
+  })
+
+  test(`says the window size of a context with no fill yet on the ${surface}`, async ($, on) => {
+    await startMeter($, on, { isFresh: true })
+    expect((await bandOf($, surface)).row).toContain('Context 200k window')
+  })
+
+  test(`leaves the band to the engine while a survey is up on the ${surface}`, async ($, on) => {
+    await startMeter($, on)
+    expect(flatten(await (await $.ui.mount(mountProps(surface, 140, true))).drawn())).toBe('engine draw')
+  })
+}
+
+test('the pane header names the model in bold above a dim line of facts', async ($, on) => {
+  const h = await startMeter($, on)
+  await fillSession($, h)
+  const tree = await (await mountPane($, 'terminal', 72)).drawn()
+  expect(findNode(tree, n => n.type === 'Text' && inlineText(n) === 'Opus 5.5')?.props).toMatchObject({ bold: true })
+  const facts = findNode(tree, n => n.type === 'Text' && inlineText(n).startsWith('up '))
+  expect(facts?.props?.dimColor).toBe(true)
+  expect(inlineText(facts)).toBe('up 2h 14m · $4.37')
+  const lines = paint(tree, 72)
+  expect(lines[0]).toMatch(/^Opus 5\.5  high effort +\[ Refresh \]$/)
+  expect(lines.join('\n')).toMatch(/^Model +claude-opus-5-5$/m)
+})
+
+for (const cols of [30, 24]) {
+  test(`keeps every gauge row within a ${cols} column pane`, async ($, on) => {
+    const h = await startMeter($, on)
+    await fillSession($, h)
+    const lines = paint(await (await mountPane($, 'terminal', cols)).drawn(), cols)
+    const gauges = lines.filter(l => l.includes('━') || l.includes('─'))
+    expect(gauges.length).toBeGreaterThanOrEqual(3)
+    expect(gauges.filter(l => [...l].length > cols)).toEqual([])
+  })
+}
+
+test('draws the pane header without a model before any is known', async ($, on) => {
+  await harness($, on)
+  const tree = await (await mountPane($, 'terminal', 72)).drawn()
+  expect(paint(tree, 72)[0]).toMatch(/^Model not known yet +\[ Count \]$/)
+})
+
+test('lines every pane value up on one label column of 14 and starts the limit gauges there', async ($, on) => {
+  const h = await startMeter($, on)
+  await fillSession($, h)
+  const lines = paint(await (await mountPane($, 'terminal', 72)).drawn(), 72)
+  const labels = ['Auto-compact', 'Messages', 'Session', 'Trend', 'Speed', 'Per update', 'Duration', 'Models', 'Id', 'Model', 'Started', 'Engine', 'Dir', 'Prompts']
+  for (const label of labels) {
+    const rows = lines.filter(l => l.slice(0, 14).trimEnd() === label && l.length > 14)
+    expect(rows.length).toBeGreaterThan(0)
+    for (const l of rows) expect(l[14]).not.toBe(' ')
+  }
+  for (const label of ['5h', 'Week']) {
+    const row = lines.find(l => l.slice(0, 14).trimEnd() === label)
+    expect(row).toBeDefined()
+    expect(row!.slice(14)).toMatch(/^[━─]/)
+  }
+})
+
+test('orders the pane sections with the limits right after the context', async ($, on) => {
+  const h = await startMeter($, on)
+  await fillSession($, h)
+  const text = paint(await (await mountPane($, 'terminal', 72)).drawn(), 72).join('\n')
+  const headings = [/^Context +\d+% · /m, /^Usage limits$/m, /^Prompt cache /m, /^Cost +\$/m, /^Tokens +\d+ requests$/m, /^Turns +\d+$/m, /^Tools +\d+ calls?$/m, /^Subagents +\d+ running/m, /^Compactions +\d+$/m, /^Session$/m]
+  const at = headings.map(re => text.search(re))
+  expect(at).not.toContain(-1)
+  expect(at).toEqual([...at].sort((a, b) => a - b))
+})
+
+const HEADINGS = ['Context', 'Prompt cache', 'Usage limits', 'Tokens', 'Cost', 'Turns', 'Tools', 'Subagents', 'Compactions', 'Memory files', 'MCP']
+
+for (const cols of [24, 30, 40, 56, 80]) {
+  test(`keeps every pane line within ${cols} columns and gaps each heading from its summary`, async ($, on) => {
+    const h = await startMeter($, on)
+    await fillSession($, h)
+    const lines = paint(await (await mountPane($, 'terminal', cols)).drawn(), cols)
+    expect(lines.filter(l => [...l].length > cols)).toEqual([])
+    const headed = lines.filter(l => HEADINGS.some(t => l.startsWith(t) && l.length > t.length))
+    expect(headed.length).toBeGreaterThanOrEqual(8)
+    expect(headed.filter(l => !HEADINGS.some(t => l.startsWith(`${t}  `)))).toEqual([])
+    expect(lines.filter(l => /…(running|User|Project)/.test(l))).toEqual([])
+  })
+}

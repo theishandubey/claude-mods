@@ -5,15 +5,17 @@ import type {
   BreakdownSnap,
   CompactionStats,
   LimitSample,
+  ModelState,
   RateLimit,
   RequestStats,
+  ResolvedModel,
   ToolStat,
   Totals,
   Trends,
   TurnReason,
   TurnStats,
 } from '../types'
-import { clean, hitRate, pushCapped } from './format'
+import { clean, hitRate, modelName, pushCapped } from './format'
 
 const HISTORY_MAX = 60
 const TURNS_MAX = 30
@@ -42,8 +44,6 @@ export type StepInput = {
   at: number
   ms: number
   usage: StepUsage | null
-  requested: string
-  effort: string | null
   messageCount: number
   isAgent: boolean
 }
@@ -74,9 +74,6 @@ export const addStep = (r: RequestStats, s: StepInput): RequestStats => {
     ...r,
     main: addTotals(r.main, s.usage),
     byModel,
-    lastModel: model,
-    requestedModel: clean(s.requested),
-    effort: s.effort,
     messageCount: s.messageCount,
     history: pushCapped(
       r.history,
@@ -89,6 +86,55 @@ export const addStep = (r: RequestStats, s: StepInput): RequestStats => {
       HISTORY_MAX,
     ),
   }
+}
+
+export const EMPTY_MODEL: ModelState = {
+  selected: null,
+  selectedAt: 0,
+  answered: null,
+  requested: null,
+  effort: null,
+  answeredRequestedAt: 0,
+}
+
+export const selectModel = (m: ModelState, id: string, at: number): ModelState =>
+  m.selected === id ? m : { ...m, selected: id, selectedAt: at }
+
+export type Answer = { answered: string; requested: string; effort: string | null; requestedAt: number }
+
+export const addAnswer = (m: ModelState, a: Answer): ModelState => ({
+  ...m,
+  answered: clean(a.answered),
+  requested: clean(a.requested),
+  effort: a.effort === null ? null : clean(a.effort),
+  answeredRequestedAt: a.requestedAt,
+})
+
+export const keepSelection = (m: ModelState): ModelState => ({
+  ...EMPTY_MODEL,
+  selected: m.selected,
+  selectedAt: m.selectedAt,
+})
+
+const answerWins = (m: ModelState) =>
+  m.answered !== null &&
+  (m.selected === null ||
+    m.answeredRequestedAt >= m.selectedAt ||
+    (m.requested !== null && modelName(m.requested) === modelName(m.selected)))
+
+export const resolveModel = (m: ModelState): ResolvedModel | null => {
+  if (m.answered !== null && answerWins(m)) {
+    const isFallback = m.requested !== null && modelName(m.requested) !== modelName(m.answered)
+
+    return {
+      name: modelName(m.answered),
+      id: m.answered,
+      fallbackFrom: isFallback ? modelName(m.requested!) : null,
+      effort: m.effort,
+    }
+  }
+
+  return m.selected === null ? null : { name: modelName(m.selected), id: m.selected, fallbackFrom: null, effort: null }
 }
 
 export const addAgentStep = (a: AgentStats, agentId: string, u: StepUsage, at: number): AgentStats => {
@@ -213,7 +259,6 @@ export const toSnap = (
     autocompactSource: clean(b.autocompactSource),
     autoCompactThreshold: b.autoCompactThreshold,
     isAutoCompactEnabled: b.isAutoCompactEnabled,
-    model: clean(b.model),
     categories: b.categories.map(c => ({ name: clean(c.name), tokens: c.tokens, color: clean(c.color), kind: c.kind })),
     squares: b.gridRows.flat().map(q => ({
       category: clean(q.categoryName),

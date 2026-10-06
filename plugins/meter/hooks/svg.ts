@@ -1,5 +1,5 @@
 import type { SnapCategory, SnapSquare } from '../types'
-import { SVG_COLORS } from './format'
+import { SVG_COLORS, type Tone } from './format'
 
 export type SvgDoc = { source: string; width: number; height: number; alt: string }
 
@@ -11,8 +11,7 @@ const SQUARE = 10
 const GAP = 3
 const BAR = 4
 const BAR_GAP = 2
-const BAR_HEIGHT = 24
-const GAUGE_HEIGHT = 6
+const BAR_HEIGHT = 20
 
 const PALETTE_SLOTS = LIGHT.length
 
@@ -42,13 +41,16 @@ export const slotMap = (categories: readonly SnapCategory[]) => {
   return slots
 }
 
-export const gaugeSvg = (pct: number, color: string | undefined, alt: string, width = 160): SvgDoc => {
+const toneFill = (tone: Tone) =>
+  tone === 'rest' ? ' class="s1"' : tone === 'idle' ? ` fill="${IDLE_FILL}"` : ` fill="${SVG_COLORS[tone]}"`
+
+export const gaugeSvg = (pct: number, tone: Tone, alt: string, width = 160, height = 6): SvgDoc => {
   const ratio = Math.min(Math.max(pct, 0), 100) / 100
   const fill = ratio === 0 ? 0 : Math.max(3, Math.round(ratio * width))
-  const paint = color ? (SVG_COLORS[color] ?? IDLE_FILL) : IDLE_FILL
-  const body = `<rect width="${width}" height="${GAUGE_HEIGHT}" rx="3" fill="${NEUTRAL}"/><rect width="${fill}" height="${GAUGE_HEIGHT}" rx="3" fill="${paint}"/>`
+  const rx = height / 2
+  const body = `<rect width="${width}" height="${height}" rx="${rx}" fill="${NEUTRAL}"/><rect width="${fill}" height="${height}" rx="${rx}"${toneFill(tone)}/>`
 
-  return { source: wrap(width, GAUGE_HEIGHT, body, false), width, height: GAUGE_HEIGHT, alt }
+  return { source: wrap(width, height, body, tone === 'rest'), width, height, alt }
 }
 
 const squareClass = (slot: number | undefined) => (slot ? ` class="s${slot}"` : ` fill="${NEUTRAL}"`)
@@ -85,19 +87,18 @@ export const swatchSvg = (slot: number | undefined, alt: string): SvgDoc => {
 export const barsSvg = (
   values: readonly number[],
   max: number,
-  colors: readonly (string | undefined)[] | undefined,
+  tones: readonly (Tone | undefined)[] | undefined,
   alt: string,
 ): SvgDoc => {
   const width = Math.max(1, values.length * (BAR + BAR_GAP) - BAR_GAP)
+  const toneAt = (i: number): Tone => tones?.[i] ?? 'rest'
   const body = values
     .map((v, i) => {
       const h = max <= 0 ? 2 : Math.min(BAR_HEIGHT, Math.max(2, Math.round((v / max) * BAR_HEIGHT)))
-      const color = colors?.[i]
-      const paint = color ? ` fill="${SVG_COLORS[color] ?? IDLE_FILL}"` : ' class="s1"'
 
-      return `<rect x="${i * (BAR + BAR_GAP)}" y="${BAR_HEIGHT - h}" width="${BAR}" height="${h}" rx="1"${paint}/>`
+      return `<rect x="${i * (BAR + BAR_GAP)}" y="${BAR_HEIGHT - h}" width="${BAR}" height="${h}" rx="1"${toneFill(toneAt(i))}/>`
     })
     .join('')
 
-  return { source: wrap(width, BAR_HEIGHT, body, !colors), width, height: BAR_HEIGHT, alt }
+  return { source: wrap(width, BAR_HEIGHT, body, values.some((_, i) => toneAt(i) === 'rest')), width, height: BAR_HEIGHT, alt }
 }

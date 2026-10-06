@@ -17,6 +17,11 @@
       "name": "auto-handoff",
       "description": "At 40% of a large window (50% of a 200k one), a dedicated turn writes a handoff and the knowledge it names into an OKF bundle in .auto-handoff/, then the context is cleared and work continues",
       "source": "./plugins/auto-handoff"
+    },
+    {
+      "name": "statusline",
+      "description": "Terminal status line under the prompt: model and effort, working directory and git state",
+      "source": "./plugins/statusline"
     }
   ]
 }
