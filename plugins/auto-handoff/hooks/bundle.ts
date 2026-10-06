@@ -185,6 +185,7 @@ export const DENY = {
   otherHandoff: (own: string) => `auto-handoff: write only ${own}; other handoff files belong to other conversations.`,
   outside: (own: string, root: string) => `auto-handoff: this turn writes only ${own} and concept files in ${root}/{decisions,gotchas,conventions,questions}/.`,
   badName: 'auto-handoff: name concept files with lowercase words joined by hyphens, ending in .md.',
+  guardFailed: (detail: string) => `auto-handoff: the bundle guard could not check this call (${detail}); try it again.`,
   bash: (root: string) => `auto-handoff: use Read, Write and Edit for files in ${root}/; never move or delete them.`,
 }
 
