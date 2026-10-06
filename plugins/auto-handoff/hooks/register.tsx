@@ -477,10 +477,23 @@ async function statusOf($: EngineInterface, t: Thresholds) {
 }
 
 const guardFailure = ($: EngineInterface, tool: string, next: Caught) => {
-  const detail = next.error.message ?? next.error.kind
+  const detail = next.error.message || next.error.kind
   $.ui.log(`auto-handoff: ${tool} guard failed: ${detail}`)
   return detail
 }
+
+const refusal = (
+  $: EngineInterface,
+  tool: string,
+  e: Record<string, unknown>,
+  next: Caught,
+  refuses: (e: Record<string, unknown>) => boolean,
+) => {
+  const detail = guardFailure($, tool, next)
+  return !next.called && enabled && refuses(e) ? { deny: DENY.guardFailed(detail) } : undefined
+}
+
+const refusesFile = (e: Record<string, unknown>) => request?.open === true || String(e.file_path).includes(BUNDLE_DIR)
 
 export const register: Register = (on, options) => {
   const thresholds = thresholdsOf(options)
@@ -596,10 +609,7 @@ export const register: Register = (on, options) => {
     const ran = await next(e)
     if (ran.deny === undefined && ran.isError !== true) seen.set(gate.real, lf(String(e.content)))
     return ran
-  }).catch(($, e, next) => {
-    const detail = guardFailure($, 'Write', next)
-    return !next.called && enabled && request?.open === true ? { deny: DENY.guardFailed(detail) } : next(e)
-  })
+  }).catch(($, e, next) => refusal($, 'Write', e, next, refusesFile) ?? next(e))
 
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
     const gate = enabled ? await gateOf($, String(e.file_path)) : undefined
@@ -611,18 +621,12 @@ export const register: Register = (on, options) => {
     if (text === undefined) seen.delete(gate.real)
     else seen.set(gate.real, text)
     return ran
-  }).catch(($, e, next) => {
-    const detail = guardFailure($, 'Edit', next)
-    return !next.called && enabled && request?.open === true ? { deny: DENY.guardFailed(detail) } : next(e)
-  })
+  }).catch(($, e, next) => refusal($, 'Edit', e, next, refusesFile) ?? next(e))
 
   on('tool.call', { tool: 'Bash' }, ($, e, next) => {
     if (!enabled || request?.open !== true || !String(e.command).includes(BUNDLE_DIR)) return next(e)
     return { deny: DENY.bash(request.root) }
-  }).catch(($, e, next) => {
-    const detail = guardFailure($, 'Bash', next)
-    return !next.called && enabled && request?.open === true ? { deny: DENY.guardFailed(detail) } : next(e)
-  })
+  }).catch(($, e, next) => refusal($, 'Bash', e, next, c => request?.open === true && String(c.command).includes(BUNDLE_DIR)) ?? next(e))
 
   on('tool.check', async ($, e, next) => {
     const below = await next(e)
