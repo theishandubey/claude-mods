@@ -622,7 +622,7 @@ test('counts a main-thread step into the request totals and history', async ($, 
   expect(requests.byModel['claude-opus-5-5'].requests).toBe(1)
   expect(requests.history).toEqual([{ at: NOW + 1500, ms: 1500, hit: 98, output: 10 }])
   expect(requests).toMatchObject({ messageCount: 3, noResponse: 0 })
-  expect(h.state.model).toMatchObject({ answered: 'claude-opus-5-5', requested: 'claude-opus-5-5', effort: 'high', answeredAt: NOW + 1500 })
+  expect(h.state.model).toMatchObject({ answered: 'claude-opus-5-5', requested: 'claude-opus-5-5', effort: 'high' })
   expect(requests.trackedSince).toBe(NOW)
 })
 
@@ -1002,16 +1002,23 @@ const paint = (node: unknown, width: number): string[] => {
   const gap = p.columnGap ?? p.gap ?? 0
   const rowWidth = typeof p.width === 'number' ? p.width : inner
   const fixed = children.map(c => ((c as Paint).props?.width as number | undefined) ?? null)
-  const natural = children.map((c, i) => (fixed[i] ?? ((c as Paint).props?.flexGrow ? 0 : Math.min(naturalWidth(c), rowWidth))))
+  const isGrower = (i: number) => fixed[i] === null && Boolean((children[i] as Paint).props?.flexGrow)
+  const natural = children.map((c, i) => {
+    if (fixed[i] !== null) return fixed[i]!
+    const cp = (c as Paint).props ?? {}
+    const outer = naturalWidth(c) + (cp.marginRight ?? 0)
+
+    return Math.min(outer, rowWidth)
+  })
   const used = natural.reduce((a, b) => a + b, 0) + gap * Math.max(0, children.length - 1)
-  const growers = children.filter((c, i) => fixed[i] === null && (c as Paint).props?.flexGrow).length
-  const spare = Math.max(0, rowWidth - used)
+  const growers = children.filter((_, i) => isGrower(i)).length
+  const spare = Number.isFinite(rowWidth) ? Math.max(0, rowWidth - used) : 0
   const overflow = used - rowWidth
   const weights = natural.map((w, i) => w * ((children[i] as Paint).props?.flexShrink ?? 1))
   const weighted = weights.reduce((a, b) => a + b, 0)
   const widths = natural.map((w, i) => {
-    if (fixed[i] === null && (children[i] as Paint).props?.flexGrow) return Math.floor(spare / Math.max(1, growers))
-    return overflow > 0 && weighted > 0 ? Math.max(0, w - Math.ceil((overflow * weights[i]!) / weighted)) : w
+    if (overflow > 0 && weighted > 0) return Math.max(0, w - Math.ceil((overflow * weights[i]!) / weighted))
+    return isGrower(i) ? w + Math.floor(spare / Math.max(1, growers)) : w
   })
   const betweenExtra = p.justifyContent === 'space-between' && growers === 0 && children.length === 2 ? spare : 0
   const blocks = children.map((c, i) => {
@@ -1022,7 +1029,7 @@ const paint = (node: unknown, width: number): string[] => {
   const height = Math.max(0, ...blocks.map(b => b.length))
   const rows = Array.from({ length: height }, (_, r) =>
     blocks
-      .map((b, i) => (b[r] ?? '').padEnd(typeof fixed[i] === 'number' || widths[i] !== natural[i] ? widths[i]! : naturalWidth(children[i])))
+      .map((b, i) => (b[r] ?? '').padEnd(typeof fixed[i] === 'number' || isGrower(i) || widths[i] !== natural[i] ? widths[i]! : naturalWidth(children[i])))
       .reduce((acc, cur, i) => acc + ' '.repeat(i === 0 ? 0 : gap + (i === 1 ? betweenExtra : 0)) + cur, ''),
   )
   return [...lead, ...rows.map(l => (pad + l).trimEnd())]
@@ -1530,6 +1537,25 @@ test('shows only a few memory files and servers until asked', async ($, on) => {
   expect(collect(tree, n => n.type === 'Button' && n.props?.key === 'more-mcp')[0]?.props?.label).toBe('+2 more')
 })
 
+test('keeps the numeric tool columns aligned when a 50 character tool name overflows', async ($, on) => {
+  const h = await startMeter($, on)
+  await runMeter($)
+  await h.clock.settle()
+  const long = `mcp__${'x'.repeat(45)}`
+  expect(long).toHaveLength(50)
+  await callTool($, { tool: long })
+  await callTool($, { tool: long })
+  await callTool($, { tool: 'Bash' })
+  const tree = await (await mountPane($, 'terminal', 72)).drawn()
+  const lines = lineCount(tree, n => n.props?.key === 'tools-rows', 72)
+  expect(lines).toHaveLength(3)
+  for (const l of lines) expect(l.length).toBeLessThanOrEqual(72)
+  const starts = lines.slice(1).map(l => [...l.matchAll(/\s(\d\S*)/g)].map(m => m.index! + 1))
+  expect(starts[0]!.length).toBeGreaterThanOrEqual(3)
+  expect(starts[1]).toEqual(starts[0])
+  for (const l of paint(tree, 72)) expect(l.length).toBeLessThanOrEqual(72)
+})
+
 test('ends a count that cannot read the breakdown as an error, not as one still running', async ($, on) => {
   const h = await startMeter($, on)
   h.breakdown = { ...breakdownFixture(), gridRows: undefined }
@@ -1850,8 +1876,8 @@ for (const [requested, answered, shown] of [
   ['claude-opus-5-5', 'claude-opus-5-5-20260101', 'Opus 5.5'],
   ['claude-opus-5-5[1m]', 'claude-opus-5-5-20260101', 'Opus 5.5'],
   ['us.anthropic.claude-opus-5-5-v1:0', 'claude-opus-5-5', 'Opus 5.5'],
-  ['claude-sonnet-4-20250514[1m]', 'claude-sonnet-4-20250514', 'claude-sonnet-4'],
-  ['claude-sonnet-4', 'claude-sonnet-4-20250514', 'claude-sonnet-4'],
+  ['claude-sonnet-4-20250514[1m]', 'claude-sonnet-4-20250514', 'Sonnet 4'],
+  ['claude-sonnet-4', 'claude-sonnet-4-20250514', 'Sonnet 4'],
 ] as const) {
   test(`does not call ${answered} a fallback from ${requested}`, async ($, on) => {
     const h = await startMeter($, on)
@@ -2051,17 +2077,30 @@ test('names an unknown model in full in the hover card and not in the band', asy
   expect(text).toContain(id)
 })
 
-test('names a model from its id, a bare alias or a cloud provider id', () => {
-  expect(modelName('us.anthropic.claude-opus-5-5-v1:0')).toBe('Opus 5.5')
-  expect(modelName('claude-opus-5-5[1m]')).toBe('Opus 5.5')
-  expect(modelName('claude-opus-4-1-20250805')).toBe('Opus 4.1')
-  expect(modelName('sonnet')).toBe('Sonnet')
-  expect(modelName('opus[1m]')).toBe('Opus')
-  expect(modelName('default')).toBe('default')
-  expect(modelName('claude-sonnet-4-20250514')).toBe('claude-sonnet-4')
-  expect(modelName('claude-sonnet-4-20250514[1m]')).toBe('claude-sonnet-4')
-  expect(modelName('custom-model[beta]')).toBe('custom-model')
-})
+for (const [id, name] of [
+  ['us.anthropic.claude-opus-5-5-v1:0', 'Opus 5.5'],
+  ['anthropic.claude-sonnet-4-5-20250929-v1:0', 'Sonnet 4.5'],
+  ['claude-opus-4-1-20250805', 'Opus 4.1'],
+  ['claude-opus-5-5', 'Opus 5.5'],
+  ['claude-opus-5-5[1m]', 'Opus 5.5'],
+  ['claude-opus-4-20250514', 'Opus 4'],
+  ['claude-sonnet-4', 'Sonnet 4'],
+  ['claude-sonnet-4[1m]', 'Sonnet 4'],
+  ['claude-sonnet-4-20250514[1m]', 'Sonnet 4'],
+  ['anthropic.claude-sonnet-4-20250514-v1:0', 'Sonnet 4'],
+  ['opus', 'Opus'],
+  ['SONNET[1m]', 'Sonnet'],
+  ['sonnet', 'Sonnet'],
+  ['opus[1m]', 'Opus'],
+  ['default', 'default'],
+  ['custom-model[beta]', 'custom-model'],
+  ['custom-model-20250514', 'custom-model'],
+  ['claude-opus-5-512', 'claude-opus-5-512'],
+] as const) {
+  test(`names the model ${JSON.stringify(id)} as ${JSON.stringify(name)}`, () => {
+    expect(modelName(id)).toBe(name)
+  })
+}
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`leaves out the band segment of whatever is missing on the ${surface}`, async ($, on) => {

@@ -28,7 +28,7 @@ export type RequestStats = {
   history: RequestSample[]
   messageCount: number
 }
-export type ModelState = { selected: string | null; selectedAt: number; answered: string | null; requested: string | null; effort: string | null; answeredAt: number; answeredRequestedAt: number }
+export type ModelState = { selected: string | null; selectedAt: number; answered: string | null; requested: string | null; effort: string | null; answeredRequestedAt: number }
 export type ResolvedModel = { name: string; id: string; fallbackFrom: string | null; effort: string | null }
 export type TurnReason = 'answer' | 'aborted' | 'refusal' | 'error'
 export type TurnStats = {

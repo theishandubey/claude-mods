@@ -85,8 +85,8 @@ export const fmtAgo = (ms: number) => (ms < 60_000 ? 'just now' : `${fmtDuration
 const capitalize = (s: string) => `${s[0]!.toUpperCase()}${s.slice(1).toLowerCase()}`
 
 export const modelName = (id: string) => {
-  const versioned = /(opus|sonnet|haiku|fable)-(\d{1,2})-(\d{1,2})(?!\d)/i.exec(id)
-  if (versioned) return `${capitalize(versioned[1]!)} ${versioned[2]}.${versioned[3]}`
+  const versioned = /(opus|sonnet|haiku|fable)-(\d{1,2})(?:-(\d{1,2})(?!\d)|(?=$|\[|-(?:\d{8}(?!\d)|v\d)))/i.exec(id)
+  if (versioned) return `${capitalize(versioned[1]!)} ${versioned[2]}${versioned[3] === undefined ? '' : `.${versioned[3]}`}`
   const alias = /^(opus|sonnet|haiku|fable)(?:\[[^\]]*\])?$/i.exec(id)
   if (alias) return capitalize(alias[1]!)
 

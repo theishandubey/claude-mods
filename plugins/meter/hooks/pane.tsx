@@ -153,7 +153,7 @@ export const drawPane = (els: Els, data: PaneData, actions: PaneActions, opts: P
         </Text>
       </Box>
     ) : (
-      <Box key={key} width={col.width} justifyContent={col.align === 'right' ? 'flex-end' : 'flex-start'}>
+      <Box key={key} width={col.width} flexShrink={0} justifyContent={col.align === 'right' ? 'flex-end' : 'flex-start'}>
         <Text dimColor={isHeader} wrap="truncate">
           {text}
         </Text>

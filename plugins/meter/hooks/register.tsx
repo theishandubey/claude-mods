@@ -340,7 +340,6 @@ export const register: Register = on => {
           answered: usage.model,
           requested: e.model,
           effort: e.effort === undefined ? null : String(e.effort),
-          at: t1,
           requestedAt: t0,
         }),
       )

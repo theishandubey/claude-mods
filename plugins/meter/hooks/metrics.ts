@@ -94,21 +94,19 @@ export const EMPTY_MODEL: ModelState = {
   answered: null,
   requested: null,
   effort: null,
-  answeredAt: 0,
   answeredRequestedAt: 0,
 }
 
 export const selectModel = (m: ModelState, id: string, at: number): ModelState =>
   m.selected === id ? m : { ...m, selected: id, selectedAt: at }
 
-export type Answer = { answered: string; requested: string; effort: string | null; at: number; requestedAt: number }
+export type Answer = { answered: string; requested: string; effort: string | null; requestedAt: number }
 
 export const addAnswer = (m: ModelState, a: Answer): ModelState => ({
   ...m,
   answered: clean(a.answered),
   requested: clean(a.requested),
   effort: a.effort === null ? null : clean(a.effort),
-  answeredAt: a.at,
   answeredRequestedAt: a.requestedAt,
 })
 
