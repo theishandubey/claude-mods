@@ -46,6 +46,7 @@ const harness = (on: any, $: any) => {
     drop: undefined as string | undefined,
     clearRuns: true,
     clearFails: false,
+    statBroken: false,
     compactFails: false,
     checkDecision: 'ask' as 'allow' | 'ask' | 'deny',
     onRun: undefined as ((command: string) => Promise<void>) | undefined,
@@ -102,6 +103,7 @@ const harness = (on: any, $: any) => {
   on('fs.exists', (_: unknown, e: { path: string }) => ({ value: present(e.path) }) as never)
   on('fs.read', (_: unknown, e: { path: string }) => ({ value: h.files.get(real(e.path)) ?? '' }) as never)
   on('fs.stat', (_: unknown, e: { path: string; resolve: boolean }) => {
+    if (h.statBroken) return { value: null } as never
     const path = real(e.path)
     const isLink = h.links.has(norm(e.path))
     if (!isLink && !present(e.path)) throw new Error(`ENOENT: ${e.path}`)
@@ -1773,4 +1775,70 @@ test('absorbs one extra clear again after a second handoff', async ($, on) => {
   await handoffTurn($, h)
   await clearSession($)
   expect(await handoffBlock($)).toContain(`handed off to ${HANDOFF.slice(0, -3)}-2.md and then cleared`)
+})
+
+test('refuses a handoff-turn write when the bundle guard fails', async ($, on) => {
+  const h = harness(on, $)
+  await inTurn($, h)
+  h.statBroken = true
+  const result = await writeFile($, X, 'x')
+  expect(result.deny).toContain('the bundle guard could not check this call')
+  expect(h.files.has(X)).toBe(false)
+  expect(h.reached).toEqual([])
+  expect(logged(h, 'Write guard failed')).toBe(1)
+})
+
+test('refuses a write to the bundle outside the handoff turn when the bundle guard fails', async ($, on) => {
+  const h = harness(on, $)
+  h.statBroken = true
+  const result = await writeFile($, X, 'x')
+  expect(result.deny).toContain('the bundle guard could not check this call')
+  expect(h.files.has(X)).toBe(false)
+  expect(h.reached).toEqual([])
+  expect(logged(h, 'Write guard failed')).toBe(1)
+})
+
+test('lets a read through when its guard fails', async ($, on) => {
+  const h = harness(on, $)
+  h.files.set(X, MACHINE)
+  await inTurn($, h)
+  h.statBroken = true
+  const result = await readFile($, X)
+  expect(result.deny).toBeUndefined()
+  expect(result.text).toBe(MACHINE)
+  expect(logged(h, 'Read guard failed')).toBe(1)
+})
+
+test('refuses a handoff-turn edit when the bundle guard fails', async ($, on) => {
+  const h = harness(on, $)
+  h.files.set(X, MACHINE)
+  await inTurn($, h)
+  h.statBroken = true
+  const result = await editFile($, X, 'Old.', 'New.')
+  expect(result.deny).toContain('the bundle guard could not check this call')
+  expect(file(h, X)).toBe(MACHINE)
+  expect(h.reached).toEqual([])
+  expect(logged(h, 'Edit guard failed')).toBe(1)
+})
+
+test('passes the decision from below through when the check guard fails in the handoff turn', async ($, on) => {
+  const h = harness(on, $)
+  await inTurn($, h)
+  h.statBroken = true
+  const result = await $.tool.check({ tool: 'Write', input: { file_path: X } } as never)
+  expect(result.decision).toBe('ask')
+  expect(h.checks).toEqual(['Write'])
+  expect(logged(h, 'tool.check guard failed')).toBe(1)
+})
+
+test('returns the real result of a write that ran when a fault follows the tool', async ($, on) => {
+  const h = harness(on, $)
+  await inTurn($, h)
+  let content: unknown[] = []
+  for (let depth = 0; depth < 20_000; depth += 1) content = [content]
+  const result = await writeFile($, X, content as never)
+  expect(result.text).toBe('written')
+  expect(h.files.has(X)).toBe(true)
+  expect(h.reached).toEqual(['Write'])
+  expect(logged(h, 'Write guard failed')).toBe(1)
 })

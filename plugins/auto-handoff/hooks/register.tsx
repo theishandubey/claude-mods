@@ -1,4 +1,4 @@
-import type { EngineInterface, PluginOptions, Register } from 'claude-code'
+import type { Caught, EngineInterface, PluginOptions, Register } from 'claude-code'
 
 import {
   BUNDLE_DIR,
@@ -476,6 +476,25 @@ async function statusOf($: EngineInterface, t: Thresholds) {
   return statusText({ enabled, phase, threshold: thresholdFor(window, t), percent, root: await bundleRoot($) })
 }
 
+const guardFailure = ($: EngineInterface, tool: string, next: Caught) => {
+  const detail = (next.error.message || next.error.kind).slice(0, 200)
+  $.ui.log(`auto-handoff: ${tool} guard failed: ${detail}`)
+  return detail
+}
+
+const refusal = (
+  $: EngineInterface,
+  tool: string,
+  e: Record<string, unknown>,
+  next: Caught,
+  refuses: (e: Record<string, unknown>) => boolean,
+) => {
+  const detail = guardFailure($, tool, next)
+  return !next.called && enabled && refuses(e) ? { deny: DENY.guardFailed(detail) } : undefined
+}
+
+const refusesFile = (e: Record<string, unknown>) => request?.open === true || String(e.file_path).includes(BUNDLE_DIR)
+
 export const register: Register = (on, options) => {
   const thresholds = thresholdsOf(options)
 
@@ -578,6 +597,9 @@ export const register: Register = (on, options) => {
     const ran = await next(e)
     if (text !== undefined && ran.deny === undefined && ran.isError !== true) seen.set(spot.real, text)
     return ran
+  }).catch(($, e, next) => {
+    guardFailure($, 'Read', next)
+    return next(e)
   })
 
   on('tool.call', { tool: 'Write' }, async ($, e, next) => {
@@ -587,7 +609,7 @@ export const register: Register = (on, options) => {
     const ran = await next(e)
     if (ran.deny === undefined && ran.isError !== true) seen.set(gate.real, lf(String(e.content)))
     return ran
-  })
+  }).catch(($, e, next) => refusal($, 'Write', e, next, refusesFile) ?? next(e))
 
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
     const gate = enabled ? await gateOf($, String(e.file_path)) : undefined
@@ -599,11 +621,15 @@ export const register: Register = (on, options) => {
     if (text === undefined) seen.delete(gate.real)
     else seen.set(gate.real, text)
     return ran
-  })
+  }).catch(($, e, next) => refusal($, 'Edit', e, next, refusesFile) ?? next(e))
 
   on('tool.call', { tool: 'Bash' }, ($, e, next) => {
     if (!enabled || request?.open !== true || !String(e.command).includes(BUNDLE_DIR)) return next(e)
     return { deny: DENY.bash(request.root) }
+  }).catch(($, e, next) => {
+    guardFailure($, 'Bash', next)
+    if (!next.called && enabled && request?.open === true && String(e.command).includes(BUNDLE_DIR)) return { deny: DENY.bash(request.root) }
+    return next(e)
   })
 
   on('tool.check', async ($, e, next) => {
@@ -616,6 +642,9 @@ export const register: Register = (on, options) => {
       if (rel !== undefined && rel !== '') return { decision: 'allow', reason: 'auto-handoff: the handoff turn reads and writes its bundle' }
     }
     return below
+  }).catch(($, e, next) => {
+    guardFailure($, 'tool.check', next)
+    return next(e)
   })
 
   on('session.end', ($, e, next) => {
