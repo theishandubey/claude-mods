@@ -49,3 +49,7 @@ cd plugins/<name> && claude plugin test .
 ```
 
 Check the marketplace with `claude plugin validate .` from the repo root.
+
+## License
+
+[MIT](LICENSE)
