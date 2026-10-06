@@ -1,7 +1,7 @@
 {
   "name": "agent-graph",
-  "version": "0.2.0",
-  "description": "Desktop-only pane drawing the session's running subagents as a left-to-right graph",
+  "version": "0.3.0",
+  "description": "Pane drawing the session's running subagents: a left-to-right card graph in the desktop app, an indented tree in the terminal",
   "author": { "name": "Ishan Dubey" },
   "types": "./types/index.d.ts"
 }

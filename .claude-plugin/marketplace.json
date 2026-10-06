@@ -10,7 +10,7 @@
     },
     {
       "name": "agent-graph",
-      "description": "Desktop-only pane drawing the session's running subagents as a left-to-right graph",
+      "description": "Pane drawing the session's running subagents: a left-to-right card graph in the desktop app, an indented tree in the terminal",
       "source": "./plugins/agent-graph"
     },
     {

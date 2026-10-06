@@ -7,6 +7,15 @@ export const RECENT_MS = 2 * 60 * 1000
 
 export type Tone = 'ok' | 'warn' | 'hot'
 
+export type NodeParts = {
+  elapsed?: string
+  steps?: number
+  tokens?: string
+  ctxTokens?: string
+  cacheHit?: string
+  cost?: string
+}
+
 export type GraphNode = {
   id: string
   title: string
@@ -19,6 +28,7 @@ export type GraphNode = {
   ctxTone: Tone
   model?: string
   extras: string[]
+  parts: NodeParts
   depth: number
   slot: number
   children: GraphNode[]
@@ -72,31 +82,38 @@ const fmtTokens = (n: number) => {
   return k < 1000 ? `${k}k` : `${(n / 1_000_000).toFixed(1)}M`
 }
 
-const metaLine = (elapsed: string, a: Activity | undefined) =>
-  [elapsed, a?.steps ? `${a.steps} steps` : '', a?.outputTokens ? `${fmtTokens(a.outputTokens)} tok` : '']
-    .filter(Boolean)
-    .join(' · ')
-
-const metaOf = (status: GraphNode['status'], act: Activity | undefined, now: number, withElapsed: boolean) => {
+const partsOf = (status: GraphNode['status'], act: Activity | undefined, now: number, withElapsed: boolean): NodeParts => {
   const start = act?.runStart ?? act?.firstSeen ?? now
   const end = status === 'running' ? now : (act?.endedAt ?? now)
-  return sanitize(metaLine(withElapsed ? fmtElapsed(end - start) : '', act))
+  const replied = act?.lastContext === undefined ? undefined : act
+  return {
+    elapsed: withElapsed ? fmtElapsed(end - start) : undefined,
+    steps: act?.steps ? act.steps : undefined,
+    tokens: act?.outputTokens ? fmtTokens(act.outputTokens) : undefined,
+    ctxTokens: replied ? fmtTokens(replied.lastContext ?? 0) : undefined,
+    cacheHit: replied?.lastCacheHit === undefined ? undefined : `${Math.round(replied.lastCacheHit * 100)}%`,
+    cost: replied?.costUsd === undefined ? undefined : fmtCost(replied.costUsd, replied.costPartial === true),
+  }
 }
+
+const metaOf = (p: NodeParts) =>
+  sanitize(
+    [p.elapsed ?? '', p.steps ? `${p.steps} ${p.steps === 1 ? 'step' : 'steps'}` : '', p.tokens ? `${p.tokens} tok` : '']
+      .filter(Boolean)
+      .join(' · '),
+  )
 
 export const toneOf = (pct: number): Tone => (pct >= 80 ? 'hot' : pct >= 50 ? 'warn' : 'ok')
 
 const fmtCost = (usd: number, isPartial: boolean) =>
   `${usd > 0 && usd < 0.01 ? '<$0.01' : `~$${usd.toFixed(2)}`}${isPartial ? '+' : ''}`
 
-const metricsOf = (act: Activity | undefined) => {
-  if (act?.lastContext === undefined) return { ctx: 'waiting for first reply', ctxPct: undefined, ctxTone: 'ok' as Tone, extras: [] }
-  const window = act.lastModel === undefined ? undefined : windowFor(act.lastModel)
-  const ctxPct = window ? Math.min(100, Math.max(0, (act.lastContext / window) * 100)) : undefined
-  const ctx = `ctx ${fmtTokens(act.lastContext)}${ctxPct === undefined ? '' : ` · ${Math.round(ctxPct)}%`}`
-  const extras = [
-    act.lastCacheHit === undefined ? '' : `cache ${Math.round(act.lastCacheHit * 100)}%`,
-    act.costUsd === undefined ? '' : fmtCost(act.costUsd, act.costPartial === true),
-  ].filter(Boolean)
+const metricsOf = (act: Activity | undefined, p: NodeParts) => {
+  if (p.ctxTokens === undefined) return { ctx: 'waiting for first reply', ctxPct: undefined, ctxTone: 'ok' as Tone, extras: [] }
+  const window = act?.lastModel === undefined ? undefined : windowFor(act.lastModel)
+  const ctxPct = window ? Math.min(100, Math.max(0, ((act?.lastContext ?? 0) / window) * 100)) : undefined
+  const ctx = `ctx ${p.ctxTokens}${ctxPct === undefined ? '' : ` · ${Math.round(ctxPct)}%`}`
+  const extras = [p.cacheHit === undefined ? '' : `cache ${p.cacheHit}`, p.cost ?? ''].filter(Boolean)
   return { ctx: sanitize(ctx), ctxPct, ctxTone: toneOf(ctxPct ?? 0), extras: extras.map(sanitize) }
 }
 
@@ -161,15 +178,17 @@ export const buildGraph = (
     const children = kids.map(k => make(k, depth + 1))
     if (children.length === 0) nextSlot += 1
     const status = row ? statusOf(row.status) : isMainWorking ? 'running' : 'idle'
+    const parts = partsOf(status, act, now, row !== null)
     return {
       id,
       title: row ? sanitize(row.name ?? row.type) : 'Main',
       status,
       description: row ? sanitize(row.description) : '',
       activity: sanitize(act?.tool ?? ''),
-      meta: metaOf(status, act, now, row !== null),
+      meta: metaOf(parts),
       model: modelLabel(act?.lastModel === undefined ? undefined : sanitize(act.lastModel)),
-      ...metricsOf(act),
+      parts,
+      ...metricsOf(act, parts),
       depth,
       slot,
       children,
