@@ -6,7 +6,6 @@ export type CacheStats = {
   totalWrite: number
   totalUncached: number
   lastAt: number
-  model: string
 }
 
 export type RateLimit = { kind: string; percentUsed: number; resetsAt?: string }
@@ -27,11 +26,10 @@ export type RequestStats = {
   byModel: Record<string, Totals>
   noResponse: number
   history: RequestSample[]
-  lastModel: string | null
-  requestedModel: string | null
-  effort: string | null
   messageCount: number
 }
+export type ModelState = { selected: string | null; selectedAt: number; answered: string | null; requested: string | null; effort: string | null; answeredAt: number; answeredRequestedAt: number }
+export type ResolvedModel = { name: string; id: string; fallbackFrom: string | null; effort: string | null }
 export type TurnReason = 'answer' | 'aborted' | 'refusal' | 'error'
 export type TurnStats = {
   count: number
@@ -62,7 +60,6 @@ export type BreakdownSnap = {
   autocompactSource: string
   autoCompactThreshold?: number
   isAutoCompactEnabled: boolean
-  model: string
   categories: SnapCategory[]
   squares: SnapSquare[]
   memoryFiles: { path: string; type: string; tokens: number }[]
@@ -78,7 +75,6 @@ export type SessionInfo = {
   id: string
   version: string
   builtAt?: string
-  model: string
   startedAt: number
   prompts: number
   cwd: string
@@ -99,6 +95,7 @@ declare module 'claude-code' {
       trends: Trends
       breakdown: BreakdownState
       info: SessionInfo | null
+      model: ModelState
       expanded: string[]
       epoch: number
     }

@@ -1,1 +1,1 @@
-{ "name": "meter", "version": "0.1.0", "author": { "name": "Ishan Dubey" }, "description": "Session meters above the prompt; /meter opens detailed metrics", "types": "./types/index.d.ts" }
+{ "name": "meter", "version": "0.2.0", "author": { "name": "Ishan Dubey" }, "description": "Session meters above the prompt; /meter opens detailed metrics", "types": "./types/index.d.ts" }

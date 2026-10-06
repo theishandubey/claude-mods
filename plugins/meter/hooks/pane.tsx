@@ -7,6 +7,7 @@ import type {
   CompactionStats,
   Measure,
   RequestStats,
+  ResolvedModel,
   SessionInfo,
   SnapCategory,
   ToolStat,
@@ -14,6 +15,7 @@ import type {
   TurnStats,
 } from '../types'
 import {
+  cacheState,
   clean,
   fmtAgo,
   fmtClock,
@@ -22,20 +24,18 @@ import {
   fmtMs,
   fmtTokens,
   fmtTokens1,
-  hitColor,
+  type Tone,
   hitRate,
+  hitTone,
   limitLabel,
-  loadColor,
-  baseModel,
+  loadTone,
   modelId,
-  modelName,
   shortId,
   sparkGlyphs,
 } from './format'
 import { pace } from './metrics'
-import { type SvgDoc, barsSvg, gaugeSvg, gridSvg, memoized, slotMap, swatchSvg } from './svg'
-
-export type PaneEls = Elements['terminal'] | Elements['desktop']
+import { type Els, type Run, dimRun, drawGauge, runText, textWidth, toneRun } from './draw'
+import { type SvgDoc, barsSvg, gridSvg, memoized, slotMap, swatchSvg } from './svg'
 
 export type PaneData = {
   measure: Measure | null
@@ -48,6 +48,7 @@ export type PaneData = {
   trends: Trends
   breakdown: BreakdownState
   info: SessionInfo | null
+  model: ResolvedModel | null
   expanded: string[]
 }
 
@@ -59,22 +60,31 @@ export type PaneActions = {
 
 export type PaneOpts = { surface: 'terminal' | 'desktop'; bodyColumns: number; now: number }
 
-const CACHE_TTL_MS = 60 * 60 * 1000
 const STALE_FRACTION = 0.02
 const TOP = { tools: 10, subagents: 10, memory: 5, mcp: 5 }
+const LABEL = 14
+const PERCENT = 5
+const LIMIT_MIN_CELLS = 4
+const COMPACTION_AGO_MIN = 40
+const GAUGE_PX = { wide: 280, medium: 200, narrow: 140 }
+const LIMIT_SIZE = {
+  wide: { cells: 24, px: 160 },
+  medium: { cells: 16, px: 112 },
+  narrow: { cells: 10, px: 72 },
+}
 
 const plural = (n: number, one: string) => (n === 1 ? one : `${one}s`)
 
 type Col = { label: string; width?: number; align?: 'right' }
 
-export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opts: PaneOpts) => {
+export const drawPane = (els: Els, data: PaneData, actions: PaneActions, opts: PaneOpts) => {
   const { Box, Text, Button } = els
   const isTerminal = opts.surface === 'terminal'
   const Svg = isTerminal ? null : (els as Elements['desktop']).Svg
   const cols = opts.bodyColumns
   const now = opts.now
   const tier = cols >= 80 ? 'wide' : cols >= 56 ? 'medium' : 'narrow'
-  const { measure, cache, requests, turns, tools, agents, compactions, trends, breakdown, info, expanded } = data
+  const { measure, cache, requests, turns, tools, agents, compactions, trends, breakdown, info, model, expanded } = data
   const { snap, status } = breakdown
   const ctx = measure?.context
   const isLoading = status.state === 'loading'
@@ -94,17 +104,38 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
     </Text>
   )
 
-  const heading = (title: string, right?: RenderChildren) => (
-    <Box key={`h-${title}`} justifyContent="space-between">
-      <Text bold>{title}</Text>
-      {right ? <Text wrap="truncate">{right}</Text> : null}
+  const headRow = (title: string, isBold: boolean, summary: RenderChildren | undefined, isDim: boolean) => (
+    <Box key={`h-${title}`} columnGap={2} justifyContent="space-between">
+      <Box key="title" flexShrink={0}>
+        <Text bold={isBold}>{title}</Text>
+      </Box>
+      {summary ? (
+        <Box key="summary" flexShrink={1}>
+          <Text dimColor={isDim} wrap="truncate">
+            {summary}
+          </Text>
+        </Box>
+      ) : null}
     </Box>
   )
 
-  const inline = (title: string, text?: string, gap = 2) => (
-    <Box key={`h-${title}`} columnGap={gap}>
-      <Text bold>{title}</Text>
-      {text ? <Text wrap="truncate">{text}</Text> : null}
+  const heading = (title: string, right?: RenderChildren) => headRow(title, true, right, false)
+
+  const rich = (parts: (Run | string)[]): RenderChildren =>
+    parts.map((p, i) => (typeof p === 'string' ? p : runText(Text, `p${i}`, p)))
+
+  const subheading = (title: string, right?: string) => headRow(title, false, right, true)
+
+  const kv = (key: string, label: string, value: RenderChildren, wrap: 'truncate' | 'truncate-start' = 'truncate') => (
+    <Box key={key}>
+      <Box key="k" width={LABEL} flexShrink={0}>
+        <Text dimColor wrap="truncate">
+          {label}
+        </Text>
+      </Box>
+      <Box key="v" flexGrow={1}>
+        {typeof value === 'string' ? <Text wrap={wrap}>{value}</Text> : value}
+      </Box>
     </Box>
   )
 
@@ -114,9 +145,9 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
     </Box>
   )
 
-  const cell = (col: Col, text: string, key: string, isHeader: boolean) =>
+  const cell = (col: Col, text: string, key: string, isHeader: boolean, isLast: boolean) =>
     col.width === undefined ? (
-      <Box key={key} flexGrow={1}>
+      <Box key={key} flexGrow={1} marginRight={isLast ? 0 : 1}>
         <Text dimColor={isHeader} wrap="truncate-middle">
           {text}
         </Text>
@@ -132,10 +163,10 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
   const table = (key: string, columns: Col[], rows: string[][], hasHeader = true) => (
     <Box key={key} flexDirection="column">
       {hasHeader ? (
-        <Box key="head">{columns.map((c, i) => cell(c, c.label, `c${i}`, true))}</Box>
+        <Box key="head">{columns.map((c, i) => cell(c, c.label, `c${i}`, true, i === columns.length - 1))}</Box>
       ) : null}
       {rows.map((row, r) => (
-        <Box key={`r${r}`}>{columns.map((c, i) => cell(c, row[i] ?? '', `c${i}`, false))}</Box>
+        <Box key={`r${r}`}>{columns.map((c, i) => cell(c, row[i] ?? '', `c${i}`, false, i === columns.length - 1))}</Box>
       ))}
     </Box>
   )
@@ -154,62 +185,43 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
 
   const limited = <T,>(name: string, items: T[], limit: number) => (expanded.includes(name) ? items : items.slice(0, limit))
 
-  const gaugeText = (key: string, pct: number, color: string | undefined, width: number) => {
-    const ratio = Math.min(Math.max(pct, 0), 100) / 100
-    const filled = ratio === 0 ? 0 : Math.max(1, Math.round(ratio * width))
-
-    return (
-      <Text key={key}>
-        <Text color={color} dimColor={!color}>
-          {'━'.repeat(filled)}
-        </Text>
-        <Text dimColor>{'━'.repeat(width - filled)}</Text>
-      </Text>
-    )
-  }
-
-  const gauge = (key: string, pct: number, color: string | undefined, width: number, alt: string) =>
-    isTerminal ? gaugeText(key, pct, color, width) : svg(key, gaugeSvg(pct, color, alt))
-
-  const sparkWidth = Math.min(40, Math.max(8, cols - 24))
+  const valueCols = Math.max(1, cols - LABEL)
+  const sparkWidth = Math.min(valueCols, 40, Math.max(8, cols - LABEL - 20))
 
   const sparkline = (
     key: string,
     values: number[],
     max: number,
-    colorOf: ((v: number) => string) | undefined,
+    toneOf: ((v: number) => Tone) | undefined,
     alt: string,
     label?: string,
   ) => {
     if (!isTerminal) {
-      const bars = barsSvg(values, max, colorOf ? values.map(colorOf) : undefined, alt)
+      const bars = barsSvg(values, max, toneOf ? values.map(toneOf) : undefined, alt)
 
       return (
-        <Box key={key} justifyContent="space-between" alignItems="flex-end">
+        <Box key={key} columnGap={2} alignItems="flex-end">
           {svg('bars', bars)}
           {label ? <Text dimColor>{label}</Text> : null}
         </Box>
       )
     }
-    const glyphs = sparkGlyphs(values, max)
-    const runs: { color: string | undefined; text: string }[] = []
-    glyphs.forEach((g, i) => {
-      const color = colorOf?.(values[i]!)
+    const runs: { tone: Tone; text: string }[] = []
+    sparkGlyphs(values, max).forEach((g, i) => {
+      const tone = toneOf?.(values[i]!) ?? 'rest'
       const last = runs.at(-1)
-      if (last && last.color === color) last.text += g
-      else runs.push({ color, text: g })
+      if (last && last.tone === tone) last.text += g
+      else runs.push({ tone, text: g })
     })
 
     return (
-      <Box key={key} justifyContent="space-between">
-        <Text>
-          {runs.map((run, i) => (
-            <Text key={`run${i}`} color={run.color} dimColor={!colorOf}>
-              {run.text}
-            </Text>
-          ))}
+      <Box key={key} columnGap={2}>
+        <Text key="bars">
+          {runs.map((run, i) =>
+            runText(Text, `run${i}`, run.tone === 'rest' ? dimRun(run.text) : { text: run.text, color: run.tone }),
+          )}
         </Text>
-        {label ? <Text dimColor>{label}</Text> : null}
+        {label && values.length + 2 + textWidth(label) <= valueCols ? <Text dimColor>{label}</Text> : null}
       </Box>
     )
   }
@@ -217,37 +229,63 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
   const refreshLabel = isLoading ? 'Refreshing' : status.state === 'error' ? 'Retry' : snap ? 'Refresh' : 'Count'
 
   const header = () => {
-    const model = requests.lastModel ?? info?.model ?? snap?.model
-    const requested = requests.requestedModel
-    const modelText = model
-      ? requested && requests.lastModel && baseModel(requested) !== baseModel(requests.lastModel)
-        ? `${modelName(model)} (fallback from ${modelName(requested)})`
-        : modelName(model)
-      : null
-    const parts = [
-      modelText,
-      requests.effort,
+    const facts = [
       info ? `up ${fmtDuration(now - info.startedAt)}` : null,
       measure?.cost ? `$${measure.cost.usd.toFixed(2)}` : null,
     ].filter(Boolean)
 
+    const refreshWidth = textWidth(refreshLabel) + 4
+    const whoWidth = Math.max(0, cols - refreshWidth - 2)
+    const shownName = model?.name ?? 'Model not known yet'
+    const effortText = model?.effort ? `${model.effort} effort` : null
+    const fallbackText = model?.fallbackFrom ? `fallback from ${model.fallbackFrom}` : null
+    const withoutEffort = textWidth(shownName) + (fallbackText ? 2 + textWidth(fallbackText) : 0)
+    const isEffortShown = effortText !== null && withoutEffort + 2 + textWidth(effortText) <= whoWidth
+
     return (
-      <Box key="header" justifyContent="space-between" columnGap={2}>
-        <Box key="summary" flexGrow={1}>
-          <Text wrap="truncate">{parts.join(' · ')}</Text>
+      <Box key="header" flexDirection="column">
+        <Box key="top" columnGap={2} alignItems="center">
+          <Box key="who" flexGrow={1} flexShrink={1} columnGap={2}>
+            {model ? (
+              <Text key="name" bold wrap="truncate">
+                {model.name}
+              </Text>
+            ) : (
+              <Text key="name" dimColor>
+                Model not known yet
+              </Text>
+            )}
+            {model?.fallbackFrom ? (
+              <Text key="fallback" color="warning" wrap="truncate">
+                {`fallback from ${model.fallbackFrom}`}
+              </Text>
+            ) : null}
+            {isEffortShown ? (
+              <Text key="effort" dimColor>
+                {effortText}
+              </Text>
+            ) : null}
+          </Box>
+          <Box key="refresh-box" flexShrink={0}>
+            <Button
+              key="refresh"
+              hotkey="r"
+              label={refreshLabel}
+              onPress={
+                isLoading
+                  ? () => {}
+                  : () => {
+                      void actions.refresh()
+                    }
+              }
+            />
+          </Box>
         </Box>
-        <Button
-          key="refresh"
-          hotkey="r"
-          label={refreshLabel}
-          onPress={
-            isLoading
-              ? () => {}
-              : () => {
-                  void actions.refresh()
-                }
-          }
-        />
+        {facts.length ? (
+          <Text key="facts" dimColor wrap="truncate">
+            {facts.join(' · ')}
+          </Text>
+        ) : null}
       </Box>
     )
   }
@@ -265,25 +303,36 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
     const out: RenderChildren[] = []
     const pct = ctx?.percent
     const hasLive = ctx?.tokens !== undefined && pct !== undefined
-    out.push(heading('Context', hasLive ? `${pct}%  ${fmtTokens(ctx.tokens!)} / ${fmtTokens(ctx.window)}` : undefined))
+    const tone = pct === undefined ? 'rest' : loadTone(pct)
+    out.push(
+      heading(
+        'Context',
+        hasLive
+          ? rich([toneRun(`${pct}%`, tone), ` · ${fmtTokens(ctx.tokens!)} / ${fmtTokens(ctx.window)}`])
+          : ctx
+            ? `${fmtTokens(ctx.window)} window`
+            : undefined,
+      ),
+    )
     if (hasLive) {
-      out.push(gauge('gauge', pct, loadColor(pct), Math.max(8, Math.min(40, cols - 24)), `Context ${pct}%`))
-    }
-
-    const facts: string[] = []
-    if (snap) {
-      facts.push(
-        snap.isAutoCompactEnabled && snap.autoCompactThreshold !== undefined
-          ? `Auto-compact at ${fmtTokens(snap.autoCompactThreshold)}${
-              ctx?.tokens !== undefined
-                ? `, ${fmtTokens(Math.max(0, snap.autoCompactThreshold - ctx.tokens))} to go`
-                : ''
-            }`
-          : 'Auto-compact is off',
+      out.push(
+        drawGauge(els, opts.surface, 'gauge', pct, tone, { cells: Math.min(64, cols), px: GAUGE_PX[tier], height: 8 }, `Context ${pct}%`),
       )
     }
-    if (requests.messageCount > 0) facts.push(`${requests.messageCount} messages`)
-    if (facts.length > 0) out.push(dim('facts', facts.join(' · ')))
+    if (snap) {
+      out.push(
+        kv(
+          'auto-compact',
+          'Auto-compact',
+          snap.isAutoCompactEnabled && snap.autoCompactThreshold !== undefined
+            ? `at ${fmtTokens(snap.autoCompactThreshold)}${
+                ctx?.tokens !== undefined ? `, ${fmtTokens(Math.max(0, snap.autoCompactThreshold - ctx.tokens))} to go` : ''
+              }`
+            : 'off',
+        ),
+      )
+    }
+    if (requests.messageCount > 0) out.push(kv('messages', 'Messages', String(requests.messageCount)))
 
     if (!snap) {
       out.push(
@@ -379,7 +428,7 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
         <Box key="tokens" width={7} justifyContent="flex-end">
           <Text>{fmtTokens1(c.tokens)}</Text>
         </Box>
-        <Box key="pct" width={5} justifyContent="flex-end">
+        <Box key="pct" width={PERCENT} justifyContent="flex-end">
           <Text>{`${pctOf(c)}%`}</Text>
         </Box>
       </Box>
@@ -414,42 +463,45 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
     const memoryRows = limited('memory', s.memoryFiles, TOP.memory)
     out.push(
       <Box key="memory" flexDirection="column" marginTop={1}>
-        {inline('Memory files', s.memoryTotal.count > 0 ? `(${s.memoryTotal.count}, ${fmtTokens1(s.memoryTotal.tokens)})` : undefined, 1)}
-        {s.memoryTotal.count === 0
-          ? dim('none', 'No memory files')
-          : table(
-              'memory-rows',
-              [{ label: '' }, { label: '', width: 9 }, { label: '', width: 7, align: 'right' }],
-              memoryRows.map(f => [f.path, f.type, fmtTokens1(f.tokens)]),
-              false,
-            )}
-        {moreButton('memory', s.memoryFiles.length, TOP.memory)}
+        {subheading('Memory files', s.memoryTotal.count > 0 ? `${s.memoryTotal.count} · ${fmtTokens1(s.memoryTotal.tokens)}` : undefined)}
+        <Box key="rows" flexDirection="column" marginLeft={2}>
+          {s.memoryTotal.count === 0
+            ? dim('none', 'No memory files')
+            : table(
+                'memory-rows',
+                [{ label: '' }, { label: '', width: 9 }, { label: '', width: 7, align: 'right' }],
+                memoryRows.map(f => [f.path, f.type, fmtTokens1(f.tokens)]),
+                false,
+              )}
+          {moreButton('memory', s.memoryFiles.length, TOP.memory)}
+        </Box>
       </Box>,
     )
     const mcpTools = s.mcpServers.reduce((n, m) => n + m.tools, 0)
     const mcpTokens = s.mcpServers.reduce((n, m) => n + m.tokens, 0)
     out.push(
       <Box key="mcp" flexDirection="column" marginTop={1}>
-        {inline(
+        {subheading(
           'MCP',
           s.mcpServers.length > 0
-            ? `(${s.mcpServers.length} ${plural(s.mcpServers.length, 'server')}, ${mcpTools} ${plural(mcpTools, 'tool')}, ${fmtTokens1(mcpTokens)})`
+            ? `${s.mcpServers.length} ${plural(s.mcpServers.length, 'server')} · ${mcpTools} ${plural(mcpTools, 'tool')} · ${fmtTokens1(mcpTokens)}`
             : undefined,
-          1,
         )}
-        {s.mcpServers.length === 0
-          ? dim('none', 'No MCP tools')
-          : table(
-              'mcp-rows',
-              [{ label: '' }, { label: '', width: 10, align: 'right' }, { label: '', width: 7, align: 'right' }],
-              limited('mcp', s.mcpServers, TOP.mcp).map(m => [
-                m.server,
-                `${m.loaded < m.tools ? `${m.loaded}/` : ''}${m.tools} ${plural(m.tools, 'tool')}`,
-                fmtTokens1(m.tokens),
-              ]),
-              false,
-            )}
-        {moreButton('mcp', s.mcpServers.length, TOP.mcp)}
+        <Box key="rows" flexDirection="column" marginLeft={2}>
+          {s.mcpServers.length === 0
+            ? dim('none', 'No MCP tools')
+            : table(
+                'mcp-rows',
+                [{ label: '' }, { label: '', width: 10, align: 'right' }, { label: '', width: 7, align: 'right' }],
+                limited('mcp', s.mcpServers, TOP.mcp).map(m => [
+                  m.server,
+                  `${m.loaded < m.tools ? `${m.loaded}/` : ''}${m.tools} ${plural(m.tools, 'tool')}`,
+                  fmtTokens1(m.tokens),
+                ]),
+                false,
+              )}
+          {moreButton('mcp', s.mcpServers.length, TOP.mcp)}
+        </Box>
       </Box>,
     )
     const extras = [
@@ -476,23 +528,22 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
     let right: RenderChildren
     if (cache) {
       const hit = hitRate(cache.lastRead, cache.lastWrite, cache.lastUncached)
-      const ttlLeft = CACHE_TTL_MS - Math.max(0, now - cache.lastAt)
-      const dot = ttlLeft <= 0 ? 'error' : ttlLeft < 10 * 60000 ? 'warning' : 'success'
-      right = [
-        `${hit === null ? '-' : `${hit}%`} hit · `,
-        <Text key="dot" color={dot}>
-          ●
-        </Text>,
-        ` ${ttlLeft > 0 ? `warm ${fmtDuration(ttlLeft)}` : 'cold'}`,
-      ]
+      const state = cacheState(cache.lastAt, now, false)
+      right = rich([
+        hit === null ? dimRun('- hit') : toneRun(`${hit}% hit`, hitTone(hit)),
+        ' · ',
+        { text: '●', color: state.dot },
+        ` ${state.text}`,
+      ])
     }
     out.push(heading('Prompt cache', right))
     if (cache) {
       const sess = hitRate(cache.totalRead, cache.totalWrite, cache.totalUncached)
       out.push(
-        dim(
+        kv(
           'session',
-          `Session ${sess === null ? '-' : `${sess}%`} hit · ${fmtTokens(cache.totalRead)} read · ${fmtTokens(cache.totalWrite)} written · ${fmtTokens(cache.totalUncached)} uncached`,
+          'Session',
+          `${sess === null ? '-' : `${sess}%`} hit · ${fmtTokens(cache.totalRead)} read · ${fmtTokens(cache.totalWrite)} written · ${fmtTokens(cache.totalUncached)} uncached`,
         ),
       )
     }
@@ -500,13 +551,17 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
       const sorted = [...hits].sort((a, b) => a - b)
       const median = sorted[Math.floor(sorted.length / 2)]!
       out.push(
-        sparkline(
-          'hits',
-          hits,
-          100,
-          hitColor,
-          `Cache hit, last ${hits.length} ${plural(hits.length, 'request')}: latest ${hits.at(-1)}%, median ${median}%, min ${sorted[0]}%`,
-          `last ${hits.length} ${plural(hits.length, 'request')}`,
+        kv(
+          'trend',
+          'Trend',
+          sparkline(
+            'hits',
+            hits,
+            100,
+            hitTone,
+            `Cache hit, last ${hits.length} ${plural(hits.length, 'request')}: latest ${hits.at(-1)}%, median ${median}%, min ${sorted[0]}%`,
+            `last ${hits.length} ${plural(hits.length, 'request')}`,
+          ),
         ),
       )
     }
@@ -515,7 +570,7 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
       const totalMs = timed.reduce((n, s) => n + s.ms, 0)
       const totalOut = timed.reduce((n, s) => n + s.output, 0)
       const avg = fmtMs(totalMs / timed.length)
-      out.push(dim('speed', `Avg ${avg} per request${totalMs > 0 ? ` · ${Math.round(totalOut / (totalMs / 1000))} tok/s` : ''}`))
+      out.push(kv('speed', 'Speed', `avg ${avg} per request${totalMs > 0 ? ` · ${Math.round(totalOut / (totalMs / 1000))} tok/s` : ''}`))
     }
 
     return section('cache', out)
@@ -526,35 +581,53 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
     if (limits.length === 0) {
       return section('limits', [heading('Usage limits'), dim('none', 'No usage-limit readings (API key, or no reply yet)')])
     }
-    const gaugeWidth = tier === 'narrow' ? 8 : 20
     const rows = limits.map(l => {
       const kind = clean(l.kind)
       const pct = Math.round(l.percentUsed)
       const resetMs = l.resetsAt ? Date.parse(l.resetsAt) : NaN
       const resetIn = Number.isFinite(resetMs) ? resetMs - now : NaN
       const isPast = Number.isFinite(resetIn) && resetIn <= 0
-      const color = isPast ? undefined : loadColor(pct)
+      const tone: Tone = isPast ? 'idle' : loadTone(pct)
       const reset =
         resetIn > 0
           ? `resets ${fmtClock(resetMs, new Date(resetMs).toDateString() !== new Date(now).toDateString())} (in ${fmtDuration(resetIn)})`
           : null
       const burn = resetIn > 0 ? pace(trends.limits[kind] ?? [], now) : null
       const pacing = burn && burn.msTo100 < resetIn ? `At this pace 100% in ${fmtDuration(burn.msTo100)}, before reset` : null
+      const size =
+        tier === 'narrow'
+          ? { ...LIMIT_SIZE.narrow, cells: Math.max(LIMIT_MIN_CELLS, Math.min(LIMIT_SIZE.narrow.cells, cols - LABEL - PERCENT)) }
+          : LIMIT_SIZE[tier]
+      const inRow = tier === 'wide' ? reset : tier === 'medium' && resetIn > 0 ? `in ${fmtDuration(resetIn)}` : null
 
       return (
         <Box key={`limit-${kind}`} flexDirection="column">
-          <Box columnGap={1} alignItems="center">
-            <Box key="label" width={5}>
-              <Text>{limitLabel(kind)}</Text>
+          <Box alignItems="center">
+            <Box key="label" width={LABEL} flexShrink={0}>
+              <Text dimColor wrap="truncate">
+                {limitLabel(kind)}
+              </Text>
             </Box>
-            {gauge('gauge', pct, color, gaugeWidth, `${limitLabel(kind)} limit ${pct}%`)}
-            <Box key="pct" width={4} justifyContent="flex-end">
-              <Text dimColor={isPast}>{`${pct}%`}</Text>
+            {drawGauge(els, opts.surface, 'gauge', pct, tone, size, `${limitLabel(kind)} limit ${pct}%`)}
+            <Box key="pct" width={5} justifyContent="flex-end">
+              {runText(Text, 'pct', toneRun(`${pct}%`, tone))}
             </Box>
-            {tier !== 'narrow' && reset ? <Text dimColor wrap="truncate">{reset}</Text> : null}
+            {inRow ? (
+              <Box key="reset" marginLeft={2}>
+                {dim('reset', inRow)}
+              </Box>
+            ) : null}
           </Box>
-          {tier === 'narrow' && reset ? <Box key="reset" marginLeft={6}>{dim('reset', reset)}</Box> : null}
-          {pacing ? <Box key="pace" marginLeft={6}>{dim('pace', pacing)}</Box> : null}
+          {tier === 'narrow' && reset ? (
+            <Box key="reset" marginLeft={LABEL}>
+              {dim('reset', reset)}
+            </Box>
+          ) : null}
+          {pacing ? (
+            <Box key="pace" marginLeft={LABEL}>
+              {dim('pace', pacing)}
+            </Box>
+          ) : null}
         </Box>
       )
     })
@@ -572,9 +645,8 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
     }
     if (total.requests === 0 && requests.noResponse === 0) return section('tokens', [heading('Tokens'), dim('none', 'None yet')])
 
-    const out: RenderChildren[] = []
+    const out: RenderChildren[] = [heading('Tokens', `${total.requests} ${plural(total.requests, 'request')}`)]
     if (tier === 'narrow') {
-      out.push(heading('Tokens', `${total.requests} req`))
       out.push(
         table(
           'totals',
@@ -589,7 +661,6 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
         ),
       )
     } else {
-      out.push(heading('Tokens'))
       const row = (name: string, t: typeof total) => [
         name,
         fmtTokens(t.input),
@@ -615,7 +686,7 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
     }
     const models = Object.entries(requests.byModel).sort((a, b) => b[1].requests - a[1].requests)
     if (models.length > 0) {
-      out.push(dim('models', `By model: ${models.map(([m, t]) => `${modelId(m)} ${t.requests} req`).join(' · ')}`))
+      out.push(kv('models', 'Models', models.map(([m, t]) => `${modelId(m)} ${t.requests}`).join(' · ')))
     }
     if (requests.noResponse > 0) out.push(dim('no-response', `${requests.noResponse} ${plural(requests.noResponse, 'request')} got no response`))
 
@@ -623,31 +694,44 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
   }
 
   const costSection = () => {
-    if (!measure?.cost) return section('cost', [inline('Cost'), dim('none', 'No cost ledger')])
+    if (!measure?.cost) return section('cost', [heading('Cost'), dim('none', 'No cost ledger')])
     const deltas = trends.cost.slice(1).map((s, i) => s.usd - trends.cost[i]!.usd)
-    const parts = [`$${measure.cost.usd.toFixed(2)}`]
+    const out: RenderChildren[] = [heading('Cost', `$${measure.cost.usd.toFixed(2)}`)]
     if (deltas.length > 0) {
-      parts.push(`last update $${deltas.at(-1)!.toFixed(2)}`, `avg $${(deltas.reduce((n, d) => n + d, 0) / deltas.length).toFixed(2)}`)
+      out.push(
+        kv(
+          'per-update',
+          'Per update',
+          `last $${deltas.at(-1)!.toFixed(2)} · avg $${(deltas.reduce((n, d) => n + d, 0) / deltas.length).toFixed(2)}`,
+        ),
+      )
     }
-    const out: RenderChildren[] = [inline('Cost', parts.join(' · '))]
     const shown = deltas.slice(-sparkWidth)
     if (shown.length > 1) {
-      out.push(sparkline('trend', shown, Math.max(...shown), undefined, `Cost per update, last ${shown.length}: latest $${shown.at(-1)!.toFixed(2)}`))
+      out.push(
+        kv('trend', 'Trend', sparkline('trend', shown, Math.max(...shown), undefined, `Cost per update, last ${shown.length}: latest $${shown.at(-1)!.toFixed(2)}`)),
+      )
     }
 
     return section('cost', out)
   }
 
   const turnsSection = () => {
-    if (turns.count === 0) return section('turns', [inline('Turns'), dim('none', 'None yet')])
-    const parts = [`${turns.count}`, `avg ${fmtMs(turns.totalMs / turns.count)}`, `longest ${fmtMs(turns.longestMs)}`]
-    if (turns.aborted > 0) parts.push(`${turns.aborted} interrupted`)
-    if (turns.refused > 0) parts.push(`${turns.refused} refused`)
-    if (turns.errored > 0) parts.push(`${turns.errored} failed`)
-    const out: RenderChildren[] = [inline('Turns', parts.join(' · '))]
+    if (turns.count === 0) return section('turns', [heading('Turns'), dim('none', 'None yet')])
+    const out: RenderChildren[] = [
+      heading('Turns', String(turns.count)),
+      kv('duration', 'Duration', `avg ${fmtMs(turns.totalMs / turns.count)} · longest ${fmtMs(turns.longestMs)}`),
+    ]
+    const outcomes: string[] = []
+    if (turns.aborted > 0) outcomes.push(`${turns.aborted} interrupted`)
+    if (turns.refused > 0) outcomes.push(`${turns.refused} refused`)
+    if (turns.errored > 0) outcomes.push(`${turns.errored} failed`)
+    if (outcomes.length > 0) out.push(kv('outcomes', 'Outcomes', outcomes.join(' · ')))
     const shown = turns.recent.map(t => t.ms).slice(-sparkWidth)
     if (shown.length > 1) {
-      out.push(sparkline('trend', shown, Math.max(...shown), undefined, `Turn durations, last ${shown.length}: latest ${fmtMs(shown.at(-1)!)}, longest ${fmtMs(Math.max(...shown))}`))
+      out.push(
+        kv('trend', 'Trend', sparkline('trend', shown, Math.max(...shown), undefined, `Turn durations, last ${shown.length}: latest ${fmtMs(shown.at(-1)!)}, longest ${fmtMs(Math.max(...shown))}`)),
+      )
     }
 
     return section('turns', out)
@@ -668,8 +752,10 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
     )
     const fromAgents = entries.reduce((n, [, t]) => n + t.fromAgents, 0)
 
+    const calls = entries.reduce((n, [, t]) => n + t.calls, 0)
+
     return section('tools', [
-      heading('Tools'),
+      heading('Tools', `${calls} ${plural(calls, 'call')}`),
       table('tools-rows', columns, rows),
       moreButton('tools', entries.length, TOP.tools),
       fromAgents > 0 ? dim('from-agents', `${fromAgents} calls came from subagents`) : null,
@@ -680,7 +766,7 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
     const known = new Set(agents.list.map(a => a.id))
     const orphans = Object.entries(agents.usage).filter(([id]) => !known.has(id))
     if (agents.list.length === 0 && orphans.length === 0) {
-      return section('subagents', [inline('Subagents'), dim('none', 'No subagents this session')])
+      return section('subagents', [heading('Subagents'), dim('none', 'No subagents this session')])
     }
     const running = agents.list.filter(a => a.status === 'running').length
     const items = agents.list
@@ -734,7 +820,7 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
             )
 
     return section('subagents', [
-      inline('Subagents', `${running} running · ${agents.list.length} total`),
+      heading('Subagents', `${running} running · ${agents.list.length} total`),
       table6,
       moreButton('subagents', items.length, TOP.subagents),
     ])
@@ -750,16 +836,25 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
           : 'None. Auto-compact is off'
         : 'None yet'
 
-      return section('compactions', [inline('Compactions'), dim('none', none)])
+      return section('compactions', [heading('Compactions'), dim('none', none)])
     }
     const title = `${compactions.count}${compactions.subagentCount > 0 ? ` · ${compactions.subagentCount} in subagents` : ''}`
-    const rows = [...compactions.recent].reverse().map((c, i) => {
-      const size = c.before !== undefined && c.after !== undefined ? `${fmtTokens(c.before)} → ${fmtTokens(c.after)}` : '-'
+    const showAgo = cols >= COMPACTION_AGO_MIN
+    const rows = [...compactions.recent].reverse().map(c => {
+      const range = c.before !== undefined && c.after !== undefined ? `${fmtTokens(c.before)} → ${fmtTokens(c.after)}` : '-'
 
-      return line(`compaction-${i}`, `${c.trigger.padEnd(8)}${size.padEnd(14)}${fmtAgo(now - c.at)}`)
+      return showAgo ? [c.trigger, range, fmtAgo(now - c.at)] : [c.trigger, range]
     })
 
-    return section('compactions', [inline('Compactions', title), ...rows])
+    return section('compactions', [
+      heading('Compactions', title),
+      table(
+        'compaction-rows',
+        showAgo ? [{ label: '', width: 10 }, { label: '', width: 18 }, { label: '' }] : [{ label: '', width: 8 }, { label: '' }],
+        rows,
+        false,
+      ),
+    ])
   }
 
   const sessionSection = () => {
@@ -768,26 +863,15 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
       requests.trackedSince > info.startedAt + 60_000 ? ` · tracking since ${fmtClock(requests.trackedSince)}` : ''
     }`
     const builtAt = info.builtAt ? Date.parse(info.builtAt) : NaN
-    const facts: [string, string][] = [
-      ['Id', shortId(info.id)],
-      ['Started', started],
-      ['Engine', `${info.version}${Number.isFinite(builtAt) ? ` (built ${fmtDate(builtAt)})` : ''}`],
-      ['Dir', info.cwd],
-      ['Prompts', String(info.prompts)],
-    ]
 
     return section('session', [
       heading('Session'),
-      ...facts.map(([k, v]) => (
-        <Box key={`fact-${k}`}>
-          <Box key="k" width={9}>
-            <Text dimColor>{k}</Text>
-          </Box>
-          <Box key="v" flexGrow={1}>
-            <Text wrap={k === 'Dir' ? 'truncate-start' : 'truncate'}>{v}</Text>
-          </Box>
-        </Box>
-      )),
+      kv('id', 'Id', shortId(info.id)),
+      model ? kv('model', 'Model', model.id) : null,
+      kv('started', 'Started', started),
+      kv('engine', 'Engine', `${info.version}${Number.isFinite(builtAt) ? ` (built ${fmtDate(builtAt)})` : ''}`),
+      kv('dir', 'Dir', info.cwd, 'truncate-start'),
+      kv('prompts', 'Prompts', String(info.prompts)),
     ])
   }
 
@@ -795,10 +879,10 @@ export const drawPane = (els: PaneEls, data: PaneData, actions: PaneActions, opt
     <Box key="meter" flexDirection="column">
       {header()}
       {contextSection()}
-      {cacheSection()}
       {limitsSection()}
-      {tokensSection()}
+      {cacheSection()}
       {costSection()}
+      {tokensSection()}
       {turnsSection()}
       {toolsSection()}
       {subagentsSection()}
