@@ -11,8 +11,8 @@ export const clean = (s: string) => {
 const capitalize = (s: string) => `${s[0]!.toUpperCase()}${s.slice(1).toLowerCase()}`
 
 export const modelName = (id: string) => {
-  const versioned = /(opus|sonnet|haiku|fable)-(\d{1,2})-(\d{1,2})(?!\d)/i.exec(id)
-  if (versioned) return `${capitalize(versioned[1]!)} ${versioned[2]}.${versioned[3]}`
+  const versioned = /(opus|sonnet|haiku|fable)-(\d{1,2})(?:-(\d{1,2})(?!\d)|(?=$|\[|-(?:\d{8}(?!\d)|v\d)))/i.exec(id)
+  if (versioned) return `${capitalize(versioned[1]!)} ${versioned[2]}${versioned[3] === undefined ? '' : `.${versioned[3]}`}`
   const alias = /^(opus|sonnet|haiku|fable)(?:\[[^\]]*\])?$/i.exec(id)
 
   return alias ? capitalize(alias[1]!) : id.replace(/\[[^\]]*\]$/, '').replace(/-\d{8}$/, '')
@@ -24,21 +24,19 @@ export const EMPTY_MODEL: ModelState = {
   answered: null,
   requested: null,
   effort: null,
-  answeredAt: 0,
   answeredRequestedAt: 0,
 }
 
 export const selectModel = (m: ModelState, id: string, at: number): ModelState =>
   m.selected === id ? m : { ...m, selected: id, selectedAt: at }
 
-export type Answer = { answered: string; requested: string; effort: string | null; at: number; requestedAt: number }
+export type Answer = { answered: string; requested: string; effort: string | null; requestedAt: number }
 
 export const addAnswer = (m: ModelState, a: Answer): ModelState => ({
   ...m,
   answered: clean(a.answered),
   requested: clean(a.requested),
   effort: a.effort === null ? null : clean(a.effort),
-  answeredAt: a.at,
   answeredRequestedAt: a.requestedAt,
 })
 

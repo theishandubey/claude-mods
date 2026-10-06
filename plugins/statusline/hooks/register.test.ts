@@ -273,7 +273,7 @@ test('a tagged and dated raw id of the requested model is not a fallback', async
   h.answerWith('claude-sonnet-4-20250514[1m]')
   await step($, { model: 'claude-sonnet-4-20250514' })
   await h.clock.settle()
-  expect(line(await draw($))).toBe('claude-sonnet-4 high')
+  expect(line(await draw($))).toBe('Sonnet 4 high')
 })
 
 test('a dated raw id and its undated form are not a fallback', async ($, on) => {
@@ -281,7 +281,7 @@ test('a dated raw id and its undated form are not a fallback', async ($, on) => 
   h.answerWith('claude-sonnet-4-20250514')
   await step($, { model: 'claude-sonnet-4' })
   await h.clock.settle()
-  expect(line(await draw($))).toBe('claude-sonnet-4 high')
+  expect(line(await draw($))).toBe('Sonnet 4 high')
 })
 
 test('/clear keeps the selected model and drops the answer', async ($, on) => {
@@ -307,7 +307,13 @@ for (const [id, name] of [
   ['us.anthropic.claude-opus-5-5-v1:0', 'Opus 5.5'],
   ['anthropic.claude-sonnet-4-5-20250929-v1:0', 'Sonnet 4.5'],
   ['claude-opus-4-1-20250805', 'Opus 4.1'],
+  ['claude-opus-5-5', 'Opus 5.5'],
   ['claude-opus-5-5[1m]', 'Opus 5.5'],
+  ['claude-opus-4-20250514', 'Opus 4'],
+  ['claude-sonnet-4', 'Sonnet 4'],
+  ['claude-sonnet-4[1m]', 'Sonnet 4'],
+  ['anthropic.claude-sonnet-4-20250514-v1:0', 'Sonnet 4'],
+  ['custom-model-20250514', 'custom-model'],
   ['opus', 'Opus'],
   ['SONNET[1m]', 'Sonnet'],
   ['my-custom-model', 'my-custom-model'],
@@ -364,9 +370,9 @@ for (const surfaces of [['desktop'], ['desktop', 'mobile'], []]) {
   })
 }
 
-test('never pins a notice, and clears a leftover one at most once', async ($, on) => {
+test('never pins a notice, and clears a leftover one once at session start', async ($, on) => {
   const h = await start($, on)
-  expect(h.pins).toEqual([])
+  expect(h.pins).toEqual([undefined])
   await draw($)
   await step($)
   await $.turn.start({ text: 'hi', turnId: 't1' })

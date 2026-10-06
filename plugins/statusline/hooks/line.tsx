@@ -8,7 +8,7 @@ export type Run = { text: string; color?: Color; dim?: boolean; bold?: boolean }
 type Segment = { key: 'model' | 'path' | 'git'; runs: Run[] }
 type Level = { gap: number; path: number | 'base' | null; effort: boolean; fallbackFrom: boolean; branchMax: number }
 
-export const ROW_INDENT = 2
+export const HOST_INSET = 2
 export const DEFAULT_COLUMNS = 80
 
 const FULL: Level = { gap: 3, path: 48, effort: true, fallbackFrom: true, branchMax: 48 }

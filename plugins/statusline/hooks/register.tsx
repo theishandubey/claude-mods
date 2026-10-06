@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { GitInfo, WorkspaceState } from '../types'
-import { DEFAULT_COLUMNS, ROW_INDENT, drawLine, fitLine } from './line'
+import { DEFAULT_COLUMNS, HOST_INSET, drawLine, fitLine } from './line'
 import { EMPTY_MODEL, addAnswer, clean, keepSelection, resolveModel, selectModel } from './model'
 import { parseGitStatus } from './workspace'
 
@@ -55,6 +55,7 @@ const refresh = ($: EngineInterface) => {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    $.ui.status(undefined)
     refresh($)
 
     return next(e)
@@ -95,13 +96,11 @@ export const register: Register = on => {
     const result = yield* next(e)
     const usage = result.usage
     if (e.agentId === undefined && usage) {
-      const at = await $.clock.now()
       await update($, modelAtom, m =>
         addAnswer(m, {
           answered: usage.model,
           requested: e.model,
           effort: e.effort === undefined ? null : String(e.effort),
-          at,
           requestedAt,
         }),
       )
@@ -131,15 +130,10 @@ export const register: Register = on => {
     return result
   })
 
-  let isLegacyCleared = false
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const engine = await next(e)
     if (e.surface !== 'terminal') return engine
-    if (!isLegacyCleared) {
-      isLegacyCleared = true
-      $.ui.status(undefined)
-    }
-    const columns = (e.viewport?.columns ?? DEFAULT_COLUMNS) - 2 * ROW_INDENT
+    const columns = (e.viewport?.columns ?? DEFAULT_COLUMNS) - 2 * HOST_INSET
     const line = fitLine(resolveModel(await read($, modelAtom)), await read($, workspaceAtom), columns)
     if (line.segments.length === 0) return engine
     const els = $.ui.resolve(e)
