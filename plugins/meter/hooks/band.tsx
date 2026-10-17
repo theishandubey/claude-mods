@@ -1,65 +1,24 @@
-import type { RenderElement } from 'claude-code'
+import type { Elements, RenderElement } from 'claude-code'
 
 import type { CacheStats, Measure, ResolvedModel } from '../types'
-import { type Els, type Run, type Surface, dimRun, drawGauge, runsText, runsWidth, toneRun } from './draw'
-import { type Tone, cacheState, fmtDuration, fmtTokens, hitRate, hitTone, limitLabel, loadTone } from './format'
+import { type Run, dimRun, drawGauge, runsText, toneRun } from './draw'
+import { type Tone, cacheState, fmtCost, fmtDuration, fmtTokens, hitRate, hitTone, limitLabel, limitTone, loadTone } from './format'
 
 type BandData = { measure: Measure | null; cache: CacheStats | null; model: ResolvedModel | null }
-type BandOpts = { surface: Surface; bodyColumns: number; now: number; isWorking: boolean }
+type BandOpts = { bodyColumns: number; now: number; isWorking: boolean }
 
 type Item =
   | { key: string; runs: Run[] }
-  | { key: string; gauge: { pct: number; tone: Tone; cells: number; px: number }; alt: string }
+  | { key: string; gauge: { pct: number; tone: Tone; px: number }; alt: string }
 type Segment = { key: string; items: Item[] }
 
-type Detail = {
-  tokens: boolean
-  limitGauges: boolean
-  cacheWords: boolean
-  resets: boolean
-  gap: number
-  ctxCells: number
-  ctxLabel: string
-}
+type Detail = { limitGauges: boolean }
 
 const CTX_PX = 56
 const LIMIT_PX = 36
-const LIMIT_CELLS = 6
 const DESKTOP_LIMIT_GAUGES = 80
 
-const FULL: Detail = {
-  tokens: true,
-  limitGauges: true,
-  cacheWords: true,
-  resets: true,
-  gap: 3,
-  ctxCells: 10,
-  ctxLabel: 'Context',
-}
-
-const STEPS: Partial<Detail>[] = [
-  {},
-  { tokens: false },
-  { limitGauges: false },
-  { cacheWords: false },
-  { resets: false },
-  { gap: 2 },
-  { ctxCells: 6 },
-  { ctxCells: 0 },
-  { ctxLabel: 'Ctx' },
-]
-
-const BAND_LEVELS: Detail[] = STEPS.reduce<Detail[]>((levels, step) => [...levels, { ...(levels.at(-1) ?? FULL), ...step }], [])
-
-const desktopDetail = (cols: number): Detail => ({
-  tokens: false,
-  limitGauges: cols >= DESKTOP_LIMIT_GAUGES,
-  cacheWords: true,
-  resets: true,
-  gap: 3,
-  ctxCells: 10,
-  ctxLabel: 'Context',
-})
+const desktopDetail = (cols: number): Detail => ({ limitGauges: cols >= DESKTOP_LIMIT_GAUGES })
 
 const text = (key: string, ...runs: Run[]): Item => ({ key, runs })
 const label = (name: string) => text('label', dimRun(name))
@@ -71,18 +30,13 @@ const buildSegments = (data: BandData, detail: Detail, opts: BandOpts): Segment[
   const ctx = measure?.context
   if (ctx) {
     const pct = ctx.percent
-    const items: Item[] = [text('label', dimRun(detail.ctxLabel))]
+    const items: Item[] = [label('Context')]
     if (pct === undefined) {
       items.push(text('v', dimRun(`${fmtTokens(ctx.window)} window`)))
     } else {
       const tone = loadTone(pct)
-      if (detail.ctxCells > 0) {
-        items.push({ key: 'bar', gauge: { pct, tone, cells: detail.ctxCells, px: CTX_PX }, alt: `Context ${pct}%` })
-      }
+      items.push({ key: 'bar', gauge: { pct, tone, px: CTX_PX }, alt: `Context ${pct}%` })
       items.push(text('v', toneRun(`${pct}%`, tone)))
-      if (detail.tokens && ctx.tokens !== undefined) {
-        items.push(text('t', dimRun(`${fmtTokens(ctx.tokens)} / ${fmtTokens(ctx.window)}`)))
-      }
     }
     segments.push({ key: 'ctx', items })
   }
@@ -90,13 +44,10 @@ const buildSegments = (data: BandData, detail: Detail, opts: BandOpts): Segment[
   if (cache) {
     const hit = hitRate(cache.lastRead, cache.lastWrite, cache.lastUncached)
     const state = cacheState(cache.lastAt, opts.now, opts.isWorking)
-    const value =
-      hit === null
-        ? text('v', dimRun('-'))
-        : text('v', ...(detail.cacheWords ? [toneRun(`${hit}%`, hitTone(hit)), dimRun(' hit')] : [toneRun(`${hit}%`, hitTone(hit))]))
+    const value = hit === null ? text('v', dimRun('-')) : text('v', toneRun(`${hit}%`, hitTone(hit)), dimRun(' hit'))
     segments.push({
       key: 'cache',
-      items: [label('Cache'), value, text('s', { text: '●', color: state.dot }, dimRun(` ${detail.cacheWords ? state.text : state.short}`))],
+      items: [label('Cache'), value, text('s', { text: '●', color: state.dot }, dimRun(` ${state.text}`))],
     })
   }
 
@@ -104,37 +55,19 @@ const buildSegments = (data: BandData, detail: Detail, opts: BandOpts): Segment[
     const name = limitLabel(l.kind)
     const pct = Math.round(l.percentUsed)
     const resetIn = l.resetsAt ? Date.parse(l.resetsAt) - opts.now : NaN
-    const tone: Tone = Number.isFinite(resetIn) && resetIn <= 0 ? 'idle' : loadTone(pct)
+    const tone = limitTone(l, opts.now)
     const items: Item[] = [label(name)]
     if (detail.limitGauges) {
-      items.push({ key: 'bar', gauge: { pct, tone, cells: LIMIT_CELLS, px: LIMIT_PX }, alt: `${name} limit ${pct}%` })
+      items.push({ key: 'bar', gauge: { pct, tone, px: LIMIT_PX }, alt: `${name} limit ${pct}%` })
     }
     items.push(text('v', toneRun(`${pct}%`, tone)))
-    if (detail.resets && resetIn > 0) items.push(text('r', dimRun(`↻ ${fmtDuration(resetIn)}`)))
+    if (resetIn > 0) items.push(text('r', dimRun(`↻ ${fmtDuration(resetIn)}`)))
     segments.push({ key: `limit-${l.kind}`, items })
   }
 
-  if (measure?.cost) segments.push({ key: 'cost', items: [text('v', { text: `$${measure.cost.usd.toFixed(2)}` })] })
+  if (measure?.cost) segments.push({ key: 'cost', items: [text('v', { text: fmtCost(measure.cost.usd) })] })
 
   return segments
-}
-
-const itemWidth = (item: Item) => ('gauge' in item ? item.gauge.cells : runsWidth(item.runs))
-
-const rowWidth = (segments: readonly Segment[], gap: number) =>
-  segments.reduce((n, s) => n + s.items.reduce((w, item) => w + itemWidth(item), 0) + s.items.length - 1, 0) +
-  gap * Math.max(0, segments.length - 1)
-
-const TERMINAL_INSET = 2
-
-const pickTerminal = (data: BandData, opts: BandOpts) => {
-  for (const detail of BAND_LEVELS) {
-    const segments = buildSegments(data, detail, opts)
-    if (rowWidth(segments, detail.gap) <= opts.bodyColumns - TERMINAL_INSET) return { detail, segments, isFloor: false }
-  }
-  const detail = BAND_LEVELS.at(-1)!
-
-  return { detail, segments: buildSegments(data, detail, opts), isFloor: true }
 }
 
 const bandDetails = (data: BandData, now: number): [string, string][] => {
@@ -168,45 +101,18 @@ const bandDetails = (data: BandData, now: number): [string, string][] => {
   return details
 }
 
-export const drawBand = (els: Els, data: BandData, opts: BandOpts): RenderElement | null => {
-  const { Box, Text } = els
-  const isTerminal = opts.surface === 'terminal'
+export const drawBand = (els: Elements['desktop'], data: BandData, opts: BandOpts): RenderElement | null => {
+  const { Box, Text, Svg } = els
   if (!data.measure && !data.cache) return null
 
-  const { detail, segments, isFloor } = isTerminal
-    ? pickTerminal(data, opts)
-    : (() => {
-        const detail = desktopDetail(opts.bodyColumns)
-
-        return { detail, segments: buildSegments(data, detail, opts), isFloor: false }
-      })()
+  const segments = buildSegments(data, desktopDetail(opts.bodyColumns), opts)
   if (segments.length === 0) return null
 
   const details = bandDetails(data, opts.now)
   const labelWidth = Math.max(...details.map(([k]) => k.length))
 
   const card =
-    details.length === 0 ? null : isTerminal ? (
-      <Box
-        key="card"
-        position="absolute"
-        top={-(details.length + 2)}
-        left={TERMINAL_INSET}
-        display="none"
-        hover={{ display: 'flex', scope: 'meter' }}
-        flexDirection="column"
-        borderStyle="round"
-        borderDimColor
-        paddingX={1}
-      >
-        {details.map(([k, v]) => (
-          <Box key={k}>
-            <Text dimColor>{k.padEnd(labelWidth + 2)}</Text>
-            <Text wrap="truncate">{v}</Text>
-          </Box>
-        ))}
-      </Box>
-    ) : (
+    details.length === 0 ? null : (
       <Box key="card" display="none" hover={{ display: 'flex', scope: 'meter' }} flexDirection="column" marginBottom={1}>
         {details.map(([k, v]) => (
           <Box key={k} columnGap={2}>
@@ -220,19 +126,12 @@ export const drawBand = (els: Els, data: BandData, opts: BandOpts): RenderElemen
     )
 
   const draw = (item: Item) =>
-    'gauge' in item
-      ? drawGauge(els, opts.surface, item.key, item.gauge.pct, item.gauge.tone, item.gauge, item.alt)
-      : runsText(Text, item.key, item.runs)
+    'gauge' in item ? drawGauge(Svg, item.key, item.gauge.pct, item.gauge.tone, item.gauge.px, item.alt) : runsText(Text, item.key, item.runs)
 
   return (
-    <Box
-      key="meter"
-      flexDirection="column"
-      marginTop={isTerminal ? 1 : undefined}
-      paddingLeft={isTerminal ? TERMINAL_INSET : undefined}
-      hover={{ scope: 'meter' }}>
+    <Box key="meter" flexDirection="column" hover={{ scope: 'meter' }}>
       {card}
-      <Box key="row" flexWrap={isFloor || !isTerminal ? 'wrap' : 'nowrap'} alignItems="center" columnGap={detail.gap}>
+      <Box key="row" flexWrap="wrap" alignItems="center" columnGap={3}>
         {segments.map(s => (
           <Box key={s.key} alignItems="center" columnGap={1}>
             {s.items.map(draw)}
