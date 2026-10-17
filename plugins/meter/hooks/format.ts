@@ -3,9 +3,6 @@ export const SVG_COLORS: Record<'warning' | 'error', string> = { warning: '#c98a
 export const fmtTokens = (n: number) =>
   Math.round(n / 1000) >= 1000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`
 
-export const fmtTokens1 = (n: number) =>
-  Math.round(n / 100) >= 10_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`
-
 export const fmtDuration = (ms: number) => {
   const m = Math.max(0, Math.round(ms / 60000))
   if (m < 60) return `${m}m`
@@ -14,9 +11,19 @@ export const fmtDuration = (ms: number) => {
   return h % 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : `${Math.floor(h / 24)}d`
 }
 
+export const fmtCost = (usd: number) => `$${usd.toFixed(2)}`
+
+export const fmtElapsed = (ms: number) => (ms < 60_000 ? '<1m' : fmtDuration(ms))
+
 export type Tone = 'rest' | 'idle' | 'warning' | 'error'
 
 export const loadTone = (pct: number): Tone => (pct >= 80 ? 'error' : pct >= 50 ? 'warning' : 'rest')
+export const limitTone = (l: { percentUsed: number; resetsAt?: string }, now: number): Tone => {
+  const resetIn = l.resetsAt ? Date.parse(l.resetsAt) - now : NaN
+
+  return Number.isFinite(resetIn) && resetIn <= 0 ? 'idle' : loadTone(Math.round(l.percentUsed))
+}
+
 export const hitTone = (pct: number): Tone => (pct < 40 ? 'error' : pct < 80 ? 'warning' : 'rest')
 
 const CACHE_TTL_MS = 60 * 60 * 1000
@@ -43,56 +50,11 @@ export const limitLabel = (kind: string) =>
   kind === 'five_hour' ? '5h' : kind === 'seven_day' ? 'Week' : kind === 'spend_limit' ? 'Spend' : kind
 
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g
-const SPARK = '▁▂▃▄▅▆▇█'
-const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 export const clean = (s: string) => {
   const cut = s.replace(CONTROL, ' ').slice(0, 200)
   const last = cut.charCodeAt(cut.length - 1)
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut
 }
-
-export const pushCapped = <T>(arr: readonly T[], item: T, max: number): T[] => [...arr, item].slice(-max)
-
-export const sparkGlyphs = (values: readonly number[], max: number) =>
-  values.map(v => (max <= 0 ? SPARK[0]! : SPARK[Math.min(7, Math.max(0, Math.round((v / max) * 7)))]!))
-
-const pad2 = (n: number) => String(n).padStart(2, '0')
-
-export const fmtClock = (ms: number, withDay = false) => {
-  const d = new Date(ms)
-  const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
-  return withDay ? `${DAYS[d.getDay()]} ${time}` : time
-}
-
-export const fmtDate = (ms: number) => {
-  const d = new Date(ms)
-  return `${MONTHS[d.getMonth()]} ${d.getDate()}`
-}
-
-export const fmtMs = (ms: number) => {
-  if (ms < 100) return `${Math.round(ms)}ms`
-  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`
-  const s = Math.round(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  return s % 60 ? `${m}m ${s % 60}s` : `${m}m`
-}
-
-export const fmtAgo = (ms: number) => (ms < 60_000 ? 'just now' : `${fmtDuration(ms)} ago`)
-
-const capitalize = (s: string) => `${s[0]!.toUpperCase()}${s.slice(1).toLowerCase()}`
-
-export const modelName = (id: string) => {
-  const versioned = /(opus|sonnet|haiku|fable)-(\d{1,2})(?:-(\d{1,2})(?!\d)|(?=$|\[|-(?:\d{8}(?!\d)|v\d)))/i.exec(id)
-  if (versioned) return `${capitalize(versioned[1]!)} ${versioned[2]}${versioned[3] === undefined ? '' : `.${versioned[3]}`}`
-  const alias = /^(opus|sonnet|haiku|fable)(?:\[[^\]]*\])?$/i.exec(id)
-  if (alias) return capitalize(alias[1]!)
-
-  return id.replace(/\[[^\]]*\]$/, '').replace(/-\d{8}$/, '')
-}
-
-export const modelId = (id: string) => id.replace(/^claude-/, '')
 
 export const shortId = (id: string) => (id.length > 20 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id)

@@ -6,9 +6,8 @@ A Claude Code plugin marketplace of mods: function-hooks plugins that draw bands
 
 | Plugin | What it does |
 |---|---|
-| `meter` | Band above the prompt showing context, prompt cache, usage limits and cost; `/meter` opens a detailed metrics pane. Works in the terminal and the desktop app. |
+| `meter` | Desktop: a band above the prompt with context, prompt cache, usage limits and cost, details on hover. Terminal: a row under the prompt's mode line with model (warning colour on a fallback), effort, directory, branch with a `●` when dirty and `↑N↓N` against the upstream, then context, usage limits and cost. On either, while a subagent's transcript is in view, a line above the prompt shows that agent's name and task, status, model and effort, context, tool calls and elapsed time. |
 | `agent-graph` | Pane graphing the session's running subagents: a left-to-right card graph in the desktop app, which opens it on the first subagent, and an indented tree in the terminal, opened with `/agent-graph`. |
-| `statusline` | A styled row under the prompt's mode line, above the engine's hints: model (warning colour on a fallback), effort, directory, branch with a `●` when dirty and `↑N↓N` against the upstream. Terminal only; the desktop app shows the model in its own composer. |
 
 ## Install
 
@@ -17,8 +16,9 @@ git clone <repo-url> claude-mods
 claude plugin marketplace add ./claude-mods
 claude plugin install meter@claude-mods --scope user
 claude plugin install agent-graph@claude-mods --scope user
-claude plugin install statusline@claude-mods --scope user
 ```
+
+The `statusline` plugin is now part of `meter`; if you installed it, remove it with `claude plugin uninstall statusline@claude-mods --scope user`.
 
 ## Layout
 

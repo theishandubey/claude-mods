@@ -33,7 +33,7 @@ const runOf = (tree: unknown, text: string) =>
 
 const draw = async ($: any, columns: number | null = 140, surface = 'terminal', props: Record<string, unknown> = {}) => {
   const ui = await $.ui.mount({
-    plugin: 'statusline',
+    plugin: 'meter',
     surface,
     component: 'PromptHint',
     props: { isDraft: false, isWorking: false, hint: '? for shortcuts', ...props },
@@ -70,6 +70,9 @@ const harness = async ($: any, on: any, options: { home?: string | null } = {}) 
     return { value }
   })
   on('session.cwd', () => ({ value: h.cwd }))
+  on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200_000 }, rateLimits: [] } }) as never)
+  on('session.measure', (_: unknown, e: { changed: unknown }) => ({ changed: e.changed }))
+  on('agent.list', () => ({ value: [] }))
   on('session.surfaces', () => ({ value: h.surfaces }))
   on('process.run', async (_: unknown, e: { argv: readonly string[]; init?: RunInit }) => {
     h.runs.push({ argv: e.argv, init: e.init })
@@ -370,16 +373,16 @@ for (const surfaces of [['desktop'], ['desktop', 'mobile'], []]) {
   })
 }
 
-test('never pins a notice, and clears a leftover one once at session start', async ($, on) => {
+test('never pins a notice', async ($, on) => {
   const h = await start($, on)
-  expect(h.pins).toEqual([undefined])
+  expect(h.pins).toEqual([])
   await draw($)
   await step($)
   await $.turn.start({ text: 'hi', turnId: 't1' })
   await h.clock.settle()
   await draw($)
   await draw($)
-  expect(h.pins).toEqual([undefined])
+  expect(h.pins).toEqual([])
 })
 
 test('keeps the engine footer under the row', async ($, on) => {
@@ -729,4 +732,91 @@ test('draws the dirty marker and the ahead count plain and the behind count in t
 test('draws a detached head in the warning colour', async ($, on) => {
   await inRepo($, on, '# branch.oid abc1234def5678abc1234def5678abc1234def56\n# branch.head (detached)\n')
   expect(runOf(await draw($), '@abc1234')?.color).toBe('warning')
+})
+
+const FIGURES = {
+  context: { tokens: 91_234, window: 200_000, percent: 46 },
+  rateLimits: [
+    { kind: 'five_hour', percentUsed: 23.5, resetsAt: new Date(NOW + 130 * 60000).toISOString() },
+    { kind: 'seven_day', percentUsed: 88, resetsAt: new Date(NOW + 76 * 3600000).toISOString() },
+  ],
+  cost: { usd: 1.8432 },
+  changed: ['context', 'rateLimits', 'cost'],
+}
+
+const withFigures = async ($: any, on: any, figures: Record<string, unknown> = FIGURES) => {
+  const h = await inWideRepo($, on)
+  await $.session.measure(figures as never)
+  await h.clock.settle()
+  return h
+}
+
+for (const [columns, expected] of [
+  [124, 'Opus 5.5 high   /Volumes/Data/Projects/Sources/claude-mods   meter-redesign ● ↑2↓1   Ctx 46%   5h 24%   Week 88%   $1.84'],
+  [118, 'Opus 5.5 high  /Volumes/Data/Projects/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  5h 24%  Week 88%  $1.84'],
+  [111, 'Opus 5.5 high  /Volumes/Data/Projects/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  5h 24%  Week 88%'],
+  [90, 'Opus 5.5 high  …/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  5h 24%  Week 88%'],
+  [82, 'Opus 5.5 high  …/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  Week 88%'],
+  [72, 'Opus 5.5 high  claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  Week 88%'],
+  [67, 'Opus 5.5  claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  Week 88%'],
+  [54, 'Opus 5.5  meter-redesign ● ↑2↓1  Ctx 46%  Week 88%'],
+  [44, 'Opus 5.5  meter-redesign ● ↑2↓1  Ctx 46%'],
+  [42, 'Opus 5.5  meter-redes… ● ↑2↓1  Ctx 46%'],
+  [33, 'Opus 5.5  meter-redes… ● ↑2↓1'],
+] as const) {
+  test(`fits the row with the figures at ${columns} columns`, async ($, on) => {
+    await withFigures($, on)
+    const shown = line(await draw($, columns))
+    expect(shown).toBe(expected)
+    expect(shown?.length).toBeLessThanOrEqual(columns - 4)
+  })
+}
+
+test('colours a figure only when it is a warning or an error and dims a limit that has reset', async ($, on) => {
+  await withFigures($, on, {
+    ...FIGURES,
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 23.5, resetsAt: new Date(NOW - 5 * 60000).toISOString() },
+      FIGURES.rateLimits[1]!,
+    ],
+  })
+  const tree = await draw($)
+  expect(runOf(tree, '46%')?.color).toBeUndefined()
+  expect(runOf(tree, '46%')?.bold).toBe(false)
+  expect(runOf(tree, '88%')).toMatchObject({ color: 'error', bold: true })
+  expect(runOf(tree, '24%')).toMatchObject({ dimColor: true, bold: false })
+  expect(runOf(tree, '24%')?.color).toBeUndefined()
+  expect(runOf(tree, 'Ctx ')?.dimColor).toBe(true)
+})
+
+test('leaves out what the measure does not have', async ($, on) => {
+  await withFigures($, on, { context: { window: 200_000 }, rateLimits: [], changed: ['context', 'rateLimits'] })
+  expect(line(await draw($))).toBe('Opus 5.5 high   /Volumes/Data/Projects/Sources/claude-mods   meter-redesign ● ↑2↓1')
+})
+
+test('drops the figures on /clear until the next measure', async ($, on) => {
+  const h = await withFigures($, on)
+  expect(line(await draw($))).toContain('Ctx 46%')
+  await clearSession($)
+  await h.clock.settle()
+  expect(line(await draw($))).not.toContain('Ctx')
+  await $.session.measure(FIGURES as never)
+  expect(line(await draw($))).toContain('Ctx 46%')
+})
+
+test('draws the figures again when a new measure arrives', async ($, on) => {
+  await withFigures($, on)
+  expect(line(await draw($))).toContain('Ctx 46%')
+  await $.session.measure({ ...FIGURES, context: { tokens: 162_000, window: 200_000, percent: 81 }, changed: ['context'] } as never)
+  const tree = await draw($)
+  expect(line(tree)).toContain('Ctx 81%')
+  expect(runOf(tree, '81%')?.color).toBe('error')
+})
+
+test('strips control characters from a limit kind', async ($, on) => {
+  await withFigures($, on, {
+    ...FIGURES,
+    rateLimits: [{ kind: 'five\u0007_hour', percentUsed: 40, resetsAt: new Date(NOW + 3_600_000).toISOString() }],
+  })
+  expect(line(await draw($))).toContain('five _hour 40%')
 })

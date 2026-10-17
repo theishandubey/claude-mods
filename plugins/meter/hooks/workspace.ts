@@ -1,5 +1,5 @@
 import type { GitInfo } from '../types'
-import { clean } from './model'
+import { clean } from './format'
 
 const SHORT_SHA = 7
 

@@ -5,18 +5,13 @@
   "plugins": [
     {
       "name": "meter",
-      "description": "Session meters above the prompt; /meter opens detailed metrics",
+      "description": "Session meters: a band above the prompt on desktop, a status line under the prompt on the terminal, and a subagent line while a subagent's transcript is in view",
       "source": "./plugins/meter"
     },
     {
       "name": "agent-graph",
       "description": "Pane drawing the session's running subagents: a left-to-right card graph in the desktop app, an indented tree in the terminal",
       "source": "./plugins/agent-graph"
-    },
-    {
-      "name": "statusline",
-      "description": "Terminal status line under the prompt: model and effort, working directory and git state",
-      "source": "./plugins/statusline"
     }
   ]
 }

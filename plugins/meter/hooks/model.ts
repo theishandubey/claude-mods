@@ -1,12 +1,5 @@
-import type { ModelState } from '../types'
-
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g
-
-export const clean = (s: string) => {
-  const cut = s.replace(CONTROL, ' ').slice(0, 200)
-  const last = cut.charCodeAt(cut.length - 1)
-  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut
-}
+import type { ModelState, ResolvedModel } from '../types'
+import { clean } from './format'
 
 const capitalize = (s: string) => `${s[0]!.toUpperCase()}${s.slice(1).toLowerCase()}`
 
@@ -14,8 +7,9 @@ export const modelName = (id: string) => {
   const versioned = /(opus|sonnet|haiku|fable)-(\d{1,2})(?:-(\d{1,2})(?!\d)|(?=$|\[|-(?:\d{8}(?!\d)|v\d)))/i.exec(id)
   if (versioned) return `${capitalize(versioned[1]!)} ${versioned[2]}${versioned[3] === undefined ? '' : `.${versioned[3]}`}`
   const alias = /^(opus|sonnet|haiku|fable)(?:\[[^\]]*\])?$/i.exec(id)
+  if (alias) return capitalize(alias[1]!)
 
-  return alias ? capitalize(alias[1]!) : id.replace(/\[[^\]]*\]$/, '').replace(/-\d{8}$/, '')
+  return id.replace(/\[[^\]]*\]$/, '').replace(/-\d{8}$/, '')
 }
 
 export const EMPTY_MODEL: ModelState = {
@@ -46,21 +40,23 @@ export const keepSelection = (m: ModelState): ModelState => ({
   selectedAt: m.selectedAt,
 })
 
-export type ResolvedModel = { name: string; effort: string | null; fallbackFrom: string | null }
-
 const answerWins = (m: ModelState) =>
   m.answered !== null &&
   (m.selected === null ||
     m.answeredRequestedAt >= m.selectedAt ||
     (m.requested !== null && modelName(m.requested) === modelName(m.selected)))
 
+export const resolveAnswer = (a: { answered: string; requested: string | null; effort: string | null }): ResolvedModel => {
+  const name = modelName(a.answered)
+  const requested = a.requested === null ? null : modelName(a.requested)
+
+  return { name, id: a.answered, fallbackFrom: requested !== null && requested !== name ? requested : null, effort: a.effort }
+}
+
 export const resolveModel = (m: ModelState): ResolvedModel | null => {
   if (m.answered !== null && answerWins(m)) {
-    const name = modelName(m.answered)
-    const requested = m.requested === null ? null : modelName(m.requested)
-
-    return { name, effort: m.effort, fallbackFrom: requested !== null && requested !== name ? requested : null }
+    return resolveAnswer({ answered: m.answered, requested: m.requested, effort: m.effort })
   }
 
-  return m.selected === null ? null : { name: modelName(m.selected), effort: null, fallbackFrom: null }
+  return m.selected === null ? null : { name: modelName(m.selected), id: m.selected, fallbackFrom: null, effort: null }
 }
