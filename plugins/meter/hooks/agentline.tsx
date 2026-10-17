@@ -2,7 +2,7 @@ import type { RenderElement } from 'claude-code'
 
 import { ENDED, type AgentView } from './agents'
 import { type Els, type Run, type Surface, dimRun } from './draw'
-import { fmtElapsed, fmtTokens, shortId } from './format'
+import { fmtSpan, fmtTokens, shortId } from './format'
 import { resolveAnswer } from './model'
 import { type Segment, cut, drawRow, fitRow, levelsFrom, modelRuns } from './row'
 
@@ -91,7 +91,7 @@ export const agentSegments = (v: AgentView, level: AgentLevel, now: number): Seg
 
   if (level.elapsed && activity) {
     const end = row && ENDED.has(row.status) ? activity.lastAt : now
-    segments.push({ key: 'elapsed', runs: [{ text: fmtElapsed(Math.max(0, end - activity.firstAt)), dim: true }] })
+    segments.push({ key: 'elapsed', runs: [{ text: fmtSpan(Math.max(0, end - activity.firstAt)), dim: true }] })
   }
 
   return segments

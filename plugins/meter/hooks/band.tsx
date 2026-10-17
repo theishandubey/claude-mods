@@ -2,7 +2,7 @@ import type { Elements, RenderElement } from 'claude-code'
 
 import type { CacheStats, Measure, ResolvedModel } from '../types'
 import { type Run, dimRun, drawGauge, runsText, toneRun } from './draw'
-import { type Tone, cacheState, fmtCost, fmtDuration, fmtTokens, hitRate, hitTone, limitLabel, limitTone, loadTone } from './format'
+import { type Tone, cacheState, fmtCost, fmtDuration, fmtSpan, fmtTokens, hitRate, hitTone, limitLabel, limitTone, loadTone, resetIn } from './format'
 
 type BandData = { measure: Measure | null; cache: CacheStats | null; model: ResolvedModel | null }
 type BandOpts = { bodyColumns: number; now: number; isWorking: boolean }
@@ -54,14 +54,14 @@ const buildSegments = (data: BandData, detail: Detail, opts: BandOpts): Segment[
   for (const l of measure?.rateLimits ?? []) {
     const name = limitLabel(l.kind)
     const pct = Math.round(l.percentUsed)
-    const resetIn = l.resetsAt ? Date.parse(l.resetsAt) - opts.now : NaN
+    const left = resetIn(l, opts.now)
     const tone = limitTone(l, opts.now)
     const items: Item[] = [label(name)]
     if (detail.limitGauges) {
       items.push({ key: 'bar', gauge: { pct, tone, px: LIMIT_PX }, alt: `${name} limit ${pct}%` })
     }
     items.push(text('v', toneRun(`${pct}%`, tone)))
-    if (resetIn > 0) items.push(text('r', dimRun(`↻ ${fmtDuration(resetIn)}`)))
+    if (left > 0) items.push(text('r', dimRun(`↻ ${fmtSpan(left)}`)))
     segments.push({ key: `limit-${l.kind}`, items })
   }
 

@@ -752,10 +752,11 @@ const withFigures = async ($: any, on: any, figures: Record<string, unknown> = F
 }
 
 for (const [columns, expected] of [
-  [124, 'Opus 5.5 high   /Volumes/Data/Projects/Sources/claude-mods   meter-redesign ● ↑2↓1   Ctx 46%   5h 24%   Week 88%   $1.84'],
-  [118, 'Opus 5.5 high  /Volumes/Data/Projects/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  5h 24%  Week 88%  $1.84'],
-  [111, 'Opus 5.5 high  /Volumes/Data/Projects/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  5h 24%  Week 88%'],
-  [90, 'Opus 5.5 high  …/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  5h 24%  Week 88%'],
+  [141, 'Opus 5.5 high   /Volumes/Data/Projects/Sources/claude-mods   meter-redesign ● ↑2↓1   Ctx 46%   5h 24% ↻ 2h 10m   Week 88% ↻ 3d 4h   $1.84'],
+  [135, 'Opus 5.5 high  /Volumes/Data/Projects/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  5h 24% ↻ 2h 10m  Week 88% ↻ 3d 4h  $1.84'],
+  [128, 'Opus 5.5 high  /Volumes/Data/Projects/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  5h 24% ↻ 2h 10m  Week 88% ↻ 3d 4h'],
+  [107, 'Opus 5.5 high  …/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  5h 24% ↻ 2h 10m  Week 88% ↻ 3d 4h'],
+  [90, 'Opus 5.5 high  …/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  Week 88% ↻ 3d 4h'],
   [82, 'Opus 5.5 high  …/Sources/claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  Week 88%'],
   [72, 'Opus 5.5 high  claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  Week 88%'],
   [67, 'Opus 5.5  claude-mods  meter-redesign ● ↑2↓1  Ctx 46%  Week 88%'],
@@ -819,4 +820,44 @@ test('strips control characters from a limit kind', async ($, on) => {
     rateLimits: [{ kind: 'five\u0007_hour', percentUsed: 40, resetsAt: new Date(NOW + 3_600_000).toISOString() }],
   })
   expect(line(await draw($))).toContain('five _hour 40%')
+})
+
+const limitsOnly = (rateLimits: Record<string, unknown>[]) => ({ context: { window: 200_000 }, rateLimits, changed: ['context', 'rateLimits'] })
+
+test('shows the time until a limit resets, dim, after its percent', async ($, on) => {
+  await withFigures($, on, limitsOnly([{ kind: 'five_hour', percentUsed: 38, resetsAt: new Date(NOW + 130 * 60000).toISOString() }]))
+  const tree = await draw($)
+  expect(line(tree)).toContain('5h 38% ↻ 2h 10m')
+  expect(runOf(tree, ' ↻ 2h 10m')?.dimColor).toBe(true)
+})
+
+for (const [label, resetsAt, isIdle] of [
+  ['has no reset time', undefined, false],
+  ['has already reset', new Date(NOW - 5 * 60000).toISOString(), true],
+  ['has an unparseable reset time', 'next tuesday', false],
+] as const) {
+  test(`shows no reset for a limit that ${label}`, async ($, on) => {
+    await withFigures($, on, limitsOnly([{ kind: 'five_hour', percentUsed: 38, resetsAt }]))
+    const tree = await draw($)
+    expect(line(tree)).toContain('5h 38%')
+    expect(line(tree)).not.toContain('↻')
+    expect(runOf(tree, '38%')?.dimColor).toBe(isIdle ? true : undefined)
+  })
+}
+
+test('shows a reset under a minute away as under a minute', async ($, on) => {
+  await withFigures($, on, limitsOnly([{ kind: 'five_hour', percentUsed: 38, resetsAt: new Date(NOW + 20_000).toISOString() }]))
+  expect(line(await draw($))).toContain('5h 38% ↻ <1m')
+})
+
+test('a hot limit keeps its reset at the hot level and a narrower row drops the reset but keeps the percent', async ($, on) => {
+  await withFigures($, on)
+  const hot = await draw($, 90)
+  expect(line(hot)).not.toContain('5h')
+  expect(line(hot)).toContain('Week 88% ↻ 3d 4h')
+  expect(runOf(hot, ' ↻ 3d 4h')?.dimColor).toBe(true)
+  const narrower = await draw($, 82)
+  expect(line(narrower)).toContain('Week 88%')
+  expect(line(narrower)).not.toContain('↻')
+  expect(runOf(narrower, '88%')).toMatchObject({ color: 'error', bold: true })
 })

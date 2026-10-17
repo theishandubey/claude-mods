@@ -2,7 +2,7 @@ import type { RenderElement } from 'claude-code'
 
 import type { Measure, ResolvedModel, WorkspaceState } from '../types'
 import { type Els, type Run, dimRun, toneRun } from './draw'
-import { fmtCost, limitLabel, limitTone, loadTone } from './format'
+import { fmtCost, fmtSpan, limitLabel, limitTone, loadTone, resetIn } from './format'
 import { type Segment, cut, drawRow, fitRow, levelsFrom, modelRuns } from './row'
 import { basename, shortenPath, splitPath } from './workspace'
 
@@ -13,6 +13,7 @@ type StatusLevel = {
   fallbackFrom: boolean
   branchMax: number
   cost: boolean
+  resets: boolean
   limits: 'all' | 'hot' | 'none'
   ctx: boolean
 }
@@ -21,7 +22,7 @@ export type StatusData = { model: ResolvedModel | null; workspace: WorkspaceStat
 export const HOST_INSET = 2
 export const DEFAULT_COLUMNS = 80
 
-const FULL: StatusLevel = { gap: 3, path: 48, effort: true, fallbackFrom: true, branchMax: 48, cost: true, limits: 'all', ctx: true }
+const FULL: StatusLevel = { gap: 3, path: 48, effort: true, fallbackFrom: true, branchMax: 48, cost: true, resets: true, limits: 'all', ctx: true }
 
 const STEPS: Partial<StatusLevel>[] = [
   {},
@@ -29,6 +30,7 @@ const STEPS: Partial<StatusLevel>[] = [
   { cost: false },
   { path: 28 },
   { limits: 'hot' },
+  { resets: false },
   { path: 'base' },
   { effort: false, fallbackFrom: false },
   { branchMax: 24 },
@@ -76,7 +78,10 @@ const statusSegments = (d: StatusData, level: StatusLevel): Segment[] => {
   for (const l of d.measure?.rateLimits ?? []) {
     const tone = limitTone(l, d.now)
     if (level.limits === 'none' || (level.limits === 'hot' && tone !== 'warning' && tone !== 'error')) continue
-    segments.push({ key: `limit-${l.kind}`, runs: [dimRun(`${limitLabel(l.kind)} `), toneRun(`${Math.round(l.percentUsed)}%`, tone)] })
+    const runs: Run[] = [dimRun(`${limitLabel(l.kind)} `), toneRun(`${Math.round(l.percentUsed)}%`, tone)]
+    const left = resetIn(l, d.now)
+    if (level.resets && left > 0) runs.push(dimRun(` ↻ ${fmtSpan(left)}`))
+    segments.push({ key: `limit-${l.kind}`, runs })
   }
 
   if (level.cost && d.measure?.cost) segments.push({ key: 'cost', runs: [{ text: fmtCost(d.measure.cost.usd) }] })

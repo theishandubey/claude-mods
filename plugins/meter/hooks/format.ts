@@ -13,15 +13,17 @@ export const fmtDuration = (ms: number) => {
 
 export const fmtCost = (usd: number) => `$${usd.toFixed(2)}`
 
-export const fmtElapsed = (ms: number) => (ms < 60_000 ? '<1m' : fmtDuration(ms))
+export const fmtSpan = (ms: number) => (ms < 60_000 ? '<1m' : fmtDuration(ms))
 
 export type Tone = 'rest' | 'idle' | 'warning' | 'error'
 
 export const loadTone = (pct: number): Tone => (pct >= 80 ? 'error' : pct >= 50 ? 'warning' : 'rest')
-export const limitTone = (l: { percentUsed: number; resetsAt?: string }, now: number): Tone => {
-  const resetIn = l.resetsAt ? Date.parse(l.resetsAt) - now : NaN
+export const resetIn = (l: { resetsAt?: string }, now: number) => (l.resetsAt ? Date.parse(l.resetsAt) - now : NaN)
 
-  return Number.isFinite(resetIn) && resetIn <= 0 ? 'idle' : loadTone(Math.round(l.percentUsed))
+export const limitTone = (l: { percentUsed: number; resetsAt?: string }, now: number): Tone => {
+  const left = resetIn(l, now)
+
+  return Number.isFinite(left) && left <= 0 ? 'idle' : loadTone(Math.round(l.percentUsed))
 }
 
 export const hitTone = (pct: number): Tone => (pct < 40 ? 'error' : pct < 80 ? 'warning' : 'rest')

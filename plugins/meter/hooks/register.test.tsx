@@ -1057,3 +1057,17 @@ test('strips control characters from the agent strings', async ($, on) => {
   expect(text).toContain('Review  auth')
   expect(text).toContain('Ba sh')
 })
+
+test('shows a reset under a minute away as under a minute on the desktop', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  on('session.measure', (_, e) => ({ changed: e.changed }))
+  await $.session.measure({
+    context: { tokens: 91_234, window: 200_000, percent: 46 },
+    rateLimits: [{ kind: 'five_hour', percentUsed: 23.5, resetsAt: new Date(NOW + 20_000).toISOString() }],
+    changed: ['context', 'rateLimits'],
+  } as never)
+  const text = flatten(await (await $.ui.mount(mountProps('desktop'))).drawn())
+  const row = text.slice(text.indexOf('[/card]') + 8)
+  expect(row).toContain('↻ <1m')
+  expect(row).not.toContain('↻ 0m')
+})
